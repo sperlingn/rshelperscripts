@@ -14,4 +14,4 @@ Classes for couchtop information.  This builds from the couche models in our cli
 
 
 # Disclaimer
-Anything from this repository is only for educational purposes and is not inteneded nor released for clinical use.
+Anything from this repository is only for educational purposes and is not intended nor released for clinical use.
