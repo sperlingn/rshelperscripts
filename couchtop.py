@@ -5,6 +5,8 @@ from points import holes_by_width, point, find_first_edge, find_edges
 from operator import attrgetter
 from case_comment_data import get_case_comment_data, set_case_comment_data
 from ast import literal_eval
+from rsdicomread import read_dataset
+from struct import unpack_from
 
 import logging
 
@@ -99,35 +101,60 @@ HN_H_DIAM = 3.4
 HN_H1_TO_BOARD_Z = 0.85
 
 
+# For couch height, appears to always have tabletop at 208mm (-20.8 in RS)
+#  Possible tag of interest might include 01F1,100C to correct for image
+#  reconstruction center, but might not be relevant for oncology (scans must
+#  be centered).
+
+
+# For regular couch top, the top of the couch should be set to -20.8 in RS.
+
+# For the H&N board, on the TB, the top of the Couch structure should be at
+# -20.8 in RS, and the H&N board should be adjusted from that.
+#  For the edge, H&N board top should be set to align with the H&N board on the
+#  image.  Adjustment to be determined.
+
+
+# Data stored in DICOM tag (01F7,1027) on Philips PET/CT Simulator (as a
+# c-style struct:
+"""
+struct DCM_TAG_01F7_1027
+{ // All values Little Endian in this data, likely depends on 0002,0010
+    double CouchLong ;              // Absolute Couch logitudinal position for
+                                    // this slice in mm
+    UInt64 msSinceAcquisitionTime ; // Number of ms since 0008,0032
+    UInt64 InstanceNumber ;         // Slice number
+    UInt64 PreviousInstanceNumber ; // Instance number for preceding slice
+    UInt64 Unknown_1 ;              // Unknown, so far appears to always be 0
+}
+
+"""
+
+# DICOM Search
+PRIV_01F7_1027 = (0x01F7, 0x1027)
+HEURISTIC_OFFSET = 1500
+
+
 def guess_couchtop_z(img_stack):
     """
     Guesses the z coordinate of the couch top based on specific dicom tags.
     Tags don't currently populate correctly, so work on reading them by hand.
     """
     try:
-        from struct import unpack, unpack_from
-        from gzip import open as gzopen
-        from io import BytesIO, SEEK_CUR
-        from pydicom import dcmread
 
-        with gzopen(BytesIO(img_stack.DicomDataSet), 'rb') as dcm_io:
-            dcm_io.seek(27)
-            n_imgs = unpack("L", dcm_io.read(4))[0]
-            dcm_io.seek(n_imgs * 5 + 12, SEEK_CUR)
+        img, = read_dataset(img_stack)
 
-            img = dcmread(dcm_io)
+        CZ_raw = img[PRIV_01F7_1027].value
 
-            CZ_raw = img[(0x01F7, 0x1027)].value
+        couchZabs = unpack_from("f", CZ_raw)[0]
+        sliceloc = img.SliceLocation.real
+        ipp = img.ImagePositionPatient[2].real
 
-            couchZabs = unpack_from("f", CZ_raw)[0]
-            sliceloc = img.SliceLocation.real
-            ipp = img.ImagePositionPatient[2].real
+        cdist = sliceloc - couchZabs
+        abs_couch_pos = cdist + HEURISTIC_OFFSET
+        ippscale = ipp / sliceloc
 
-            cdist = sliceloc - couchZabs
-            abs_couch_pos = cdist + 1500
-            ippscale = ipp / sliceloc
-
-            couch_z = abs_couch_pos * ippscale
+        couch_z = abs_couch_pos * ippscale
 
         return couch_z
     except Exception as e:
