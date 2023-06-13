@@ -1,6 +1,6 @@
 import logging
 from math import sqrt
-from Typing import Sequence, List, Tuple
+from typing import Sequence, List, Tuple
 
 logger = logging.getLogger(__name__)
 
