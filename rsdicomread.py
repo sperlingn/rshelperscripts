@@ -1,11 +1,17 @@
 from struct import unpack, calcsize
 from gzip import open as gzopen, GzipFile
 from io import BytesIO, SEEK_CUR
-from pydicom import dcmread
 import logging
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger()
 
+try:
+    from pydicom import dcmread
+except ImportError:
+    # If we don't have pydicom in this env, can't do any of this. Just return a
+    # dummy function that returns none.
+    def dcmread(*args, **kwargs):
+        return None
 
 # Dicom data store in RS is in a gzipped format with multiple files stuck
 # together.  There are some (seemingly) standard headers for the file data, and

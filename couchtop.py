@@ -10,7 +10,7 @@ from struct import unpack_from
 
 import logging
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger()
 
 
 CT_Couch_TopY = 20.8
@@ -332,7 +332,7 @@ class CouchTop(object):
         surface_roi = structure_set.RoiGeometries[self.Surface_ROI]
 
         self._surfaceboundingbox = surface_roi.GetBoundingBox()
-        current_y = self.surfaceboundingbox[0].y
+        current_y = self._surfaceboundingbox[0].y
 
         y = couch_y - current_y
         pt = point(x=0, y=y, z=z) + self.Top_offset
@@ -383,11 +383,11 @@ class CouchTop(object):
                            icase=icase,
                            simple_search=simple_search)
 
-            if 'board_z' not in case_data and CouchTop._board_z:
-                case_data['board_z'] = CouchTop._board_z
-                set_case_comment_data(data=case_data,
-                                      icase=icase,
-                                      replace=True)
+        if 'board_z' not in case_data and CouchTop._board_z:
+            case_data['board_z'] = CouchTop._board_z
+            set_case_comment_data(data=case_data,
+                                    icase=icase,
+                                    replace=True)
 
     def update(self, structure_set):
         rois = {roi.OfRoi.Name for roi in structure_set.RoiGeometries}
@@ -411,14 +411,19 @@ class CouchTop(object):
 
         search_y = couch_y + HN_SEARCH_DELTA
         if simple_search:
-            search_point = point(y=search_y)
-            found_point = find_first_edge(img_stack,
-                                          search_start=search_point,
-                                          line_direction='-z',
-                                          rising_edge=True)
-            if found_point:
-                # Naively assume that the first point is the start of the board
-                z = found_point.z
+            try:
+                search_point = point(y=search_y)
+                found_point = find_first_edge(img_stack,
+                                            search_start=search_point,
+                                            line_direction='-z',
+                                            rising_edge=True)
+                logger.debug(f"Found start of board at {found_point}.")
+                if found_point:
+                    # Naively assume that the first point is the start of the board
+                    z = found_point.z
+            except Exception as e:
+                logger.warning(str(e), exc_info=True)
+                return None
         else:
             try:
                 # Ignore the central hole and look instead for the side holes.
@@ -525,10 +530,13 @@ class CouchTop(object):
             except IndexError:
                 pass
 
+        # MAGIC: Store the search result in the class so we don't have to do it
+        # again.
         if not cls._board_z:
             cls._board_z = {str(img_stack): z}
         else:
             cls._board_z[str(img_stack)] = z
+
         return z
 
     def move_rois(self, structure_set, couch_y=CT_Couch_TopY,
@@ -542,8 +550,10 @@ class CouchTop(object):
         z_top_corner = (img_stack.Corner.z + max(img_stack.SlicePositions))
         if match_z and not forced_z:
             if self.isHN:
-                z_top_corner = self.get_board_z_from_image(img_stack, couch_y,
-                                                           simple_search)
+                board_z = self.get_board_z_from_image(img_stack, couch_y,
+                                                      simple_search)
+                if board_z:
+                    z_top_corner = board_z
             else:
                 ct_z = guess_couchtop_z(img_stack)
                 if ct_z is not None:

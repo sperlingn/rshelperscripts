@@ -2,30 +2,31 @@ import logging
 from math import sqrt
 from typing import Sequence, List, Tuple
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger()
 
 
 class point(dict):
     _COORDS = ['x', 'y', 'z']
 
-    def __init__(self, x=None, y=None, z=None, pt=None):
+    def __init__(self, x=None, y=None, z=None):
         super(point, self).__init__(self)
-        self.x = 0
-        self.y = 0
-        self.z = 0
+
+        for coord in self._COORDS:
+            self[coord] = 0
 
         if isinstance(x, dict):
             self.update(x)
+        elif isinstance(x, tuple) and len(x) == len(self._COORDS):
+            for coord, val in zip(self._COORDS, x):
+                self[coord] = val
         elif all(hasattr(x, c) for c in self._COORDS):
             # Assume this is a point like and build from this:
-            pt = x
-            self.update({'x': pt.x,
-                         'y': pt.y,
-                         'z': pt.z})
+            for coord in self._COORDS:
+                self[coord] = getattr(x, coord)
         else:
-            self.x = x if x else 0
-            self.y = y if y else 0
-            self.z = z if z else 0
+            self.update({'x': x if x else 0,
+                         'y': y if y else 0,
+                         'z': z if z else 0})
 
     @classmethod
     def __contains__(cls, key):
@@ -149,7 +150,7 @@ class point(dict):
                     self[key] = 0
             else:
                 self[key] *= other
-                return self
+        return self
 
     def __idiv__(self, other):
         return self.__imul__(1./other)
@@ -167,7 +168,8 @@ class point(dict):
         return type(self)({key: int(self[key]//1) for key in self})
 
     def to_from_rs(self):
-        self *= type(self)({'x': 1, 'y': -1, 'z': 1})
+        # self *= type(self)({'x': 1, 'y': -1, 'z': 1})
+        self.y *= -1
         return self
 
     def __str__(self):
@@ -207,9 +209,7 @@ class Hole(object):
         return self.center.z
 
 
-def find_fwhm_edges(inarray, threshold='global_half_max', indices=None,
-                    min_value=None):
-    indices = indices if indices else []
+def find_fwhm_edges(inarray, threshold='global_half_max', min_value=None):
     min_value = min_value if min_value is not None else min(inarray)
     last_max = min_value
     last_i = 0
@@ -221,6 +221,7 @@ def find_fwhm_edges(inarray, threshold='global_half_max', indices=None,
 
     edge_v = threshold
 
+    indices = []
     try:
         # Iterate through and find the next start of a peak.
         for i, v in enumerate(inarray):
@@ -241,14 +242,15 @@ def find_fwhm_edges(inarray, threshold='global_half_max', indices=None,
             """
             elif v > edge_v:
                 last_i = i
-    except (IndexError, SystemError):
+    except (IndexError, SystemError) as e:
+        logger.info(str(e), exc_info=True)
         pass
 
     # Fall to here when we have an IndexError, and when we run out of points
     #  in the array.
     if last_i:
         indices.append((last_i, -1))
-        return indices
+    return indices
 
 
 def find_edges(img_stack, search_start=None, x_avg=None, y_avg=None,
@@ -326,9 +328,9 @@ def find_edges(img_stack, search_start=None, x_avg=None, y_avg=None,
 
         edge_pairs = find_fwhm_edges(line, threshold)
 
-        if logger.level <= logging.DEBUG:
-            global __DEBUG__TB__
-            __DEBUG__TB__ = locals()
+        logger.debug(f"{edge_pairs = }")
+        logger.debug(f"{line_pos = }")
+        logger.debug(f"{lvec = }")
 
         if not edge_pairs:
             # If we never found a good edge, the couch edge must be outside of
@@ -336,11 +338,13 @@ def find_edges(img_stack, search_start=None, x_avg=None, y_avg=None,
             return None
 
         # Return a list of paired edges in raystation coordinates.
-        return [(((line_pos[pair[0]] * lvec)
-                  + (corner * ~lvec)).to_from_rs(),
-                 ((line_pos[pair[1]] * lvec)
-                  + (corner * ~lvec)).to_from_rs())
-                for pair in edge_pairs]
+        edge_pairs_rs = [(((line_pos[pair[0]] * lvec)
+                           + (corner * ~lvec)).to_from_rs(),
+                          ((line_pos[pair[1]] * lvec)
+                           + (corner * ~lvec)).to_from_rs())
+                         for pair in edge_pairs]
+        logger.debug(f"{edge_pairs_rs = }")
+        return edge_pairs_rs
 
         # Return a simlpe list of edges in raystation coordinates.
         return [((line_pos[x] * lvec)
