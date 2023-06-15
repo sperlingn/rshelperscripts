@@ -7,7 +7,7 @@ import logging
 from .external import dcmread
 
 
-logger = logging.getLogger(__name__)
+_logger = logging.getLogger(__name__)
 
 # Dicom data store in RS is in a gzipped format with multiple files stuck
 # together.  There are some (seemingly) standard headers for the file data, and
@@ -44,7 +44,7 @@ class DCM_IO(GzipFile):
     def unpack_read(self, pack_str):
         pack_str = f"={pack_str}"
         n_bytes = calcsize(pack_str)
-        logger.debug(f"Reading '{pack_str}' ({n_bytes} bytes)")
+        _logger.debug(f"Reading '{pack_str}' ({n_bytes} bytes)")
         return unpack(pack_str, self.read(n_bytes))
 
     def unpack_readrepeat(self, pack_str, count):
@@ -63,23 +63,23 @@ def read_dataset(img_stack, dcm_number=0):
         with DCM_IO(gzopen(BytesIO(img_stack.DicomDataSet), 'rb')) as dcm_io:
             # Skip first 27 bytes of header (no idea what they are)
             header_bytes = dcm_io.read(27)
-            logger.debug(f"Header from DicomDataSet: {header_bytes!r}")
+            _logger.debug(f"Header from DicomDataSet: {header_bytes!r}")
 
             # FIXME: Should we check ohseven and ohtwo?
             n_dcms, ohseven, ohtwo = dcm_io.unpack_read("Lbb")
-            logger.debug(f"{n_dcms = }")
+            _logger.debug(f"{n_dcms = }")
 
             # Probably ignore this too?
             dcm_listing = dcm_io.unpack_readrepeat("bL", n_dcms)
             if dcm_listing is None:
-                logger.debug("dcmlisting empty?")
+                _logger.debug("dcmlisting empty?")
 
             for i in range(dcm_number + 1 if dcm_number != -1 else n_dcms):
                 # ???: For some reason, dcm_no starts at 2?
                 ohf, dcm_no, dcm_size, ohtwo = dcm_io.unpack_read("bLLb")
                 if ohf != 0x0f or ohtwo != 0x02:
                     pos = dcm_io.tell()
-                    logger.warning(
+                    _logger.warning(
                         f"Malformed data in image. {i}.\n"
                         f"Expected (0x0F DCM_NO DCM_SIZE, 0x02)\n"
                         f"Got: ({ohf:2X} {dcm_no} {dcm_size} {ohtwo:2X}\n"
@@ -95,5 +95,5 @@ def read_dataset(img_stack, dcm_number=0):
                     dcm_io.seek(dcm_size, SEEK_CUR)
         return dicoms
     except Exception as e:
-        logger.exception(e)
+        _logger.exception(e)
         return None

@@ -2,7 +2,7 @@ import logging
 from math import sqrt
 from typing import Sequence, List, Tuple
 
-logger = logging.getLogger(__name__)
+_logger = logging.getLogger(__name__)
 
 
 class point(dict):
@@ -232,7 +232,7 @@ def find_fwhm_edges(inarray, threshold='global_half_max', min_value=None):
 
                 if v <= edge_v:
                     indices.append((last_i, i))
-                    logger.debug(f"Adding ({last_i}, {i}) to list.")
+                    _logger.debug(f"Adding ({last_i}, {i}) to list.")
                     last_i = 0
                     """
                     indices.append(i + (indices[-2] if len(indices) > 2
@@ -243,7 +243,7 @@ def find_fwhm_edges(inarray, threshold='global_half_max', min_value=None):
             elif v > edge_v:
                 last_i = i
     except (IndexError, SystemError) as e:
-        logger.info(str(e), exc_info=True)
+        _logger.info(str(e), exc_info=True)
         pass
 
     # Fall to here when we have an IndexError, and when we run out of points
@@ -305,7 +305,7 @@ def find_edges(img_stack, search_start=None, x_avg=None, y_avg=None,
 
     corner.to_from_rs()
 
-    logger.debug(f"ires:\t{img_res}\n"
+    _logger.debug(f"ires:\t{img_res}\n"
                  f"np:\t{n_pixels}\n"
                  f"size:\t{size}\n"
                  f"res:\t{resolution}\n"
@@ -313,7 +313,7 @@ def find_edges(img_stack, search_start=None, x_avg=None, y_avg=None,
 
     voxelsizes = resolution
 
-    logger.debug(f"{voxelcount} {voxelsizes} {corner}")
+    _logger.debug(f"{voxelcount} {voxelsizes} {corner}")
 
     try:
         line_pos = [corner[ldir] + pt * resolution[ldir]
@@ -328,9 +328,9 @@ def find_edges(img_stack, search_start=None, x_avg=None, y_avg=None,
 
         edge_pairs = find_fwhm_edges(line, threshold)
 
-        logger.debug(f"{edge_pairs = }")
-        logger.debug(f"{line_pos = }")
-        logger.debug(f"{lvec = }")
+        _logger.debug(f"{edge_pairs = }")
+        _logger.debug(f"{line_pos = }")
+        _logger.debug(f"{lvec = }")
 
         if not edge_pairs:
             # If we never found a good edge, the couch edge must be outside of
@@ -343,7 +343,7 @@ def find_edges(img_stack, search_start=None, x_avg=None, y_avg=None,
                           ((line_pos[pair[1]] * lvec)
                            + (corner * ~lvec)).to_from_rs())
                          for pair in edge_pairs]
-        logger.debug(f"{edge_pairs_rs = }")
+        _logger.debug(f"{edge_pairs_rs = }")
         return edge_pairs_rs
 
         # Return a simlpe list of edges in raystation coordinates.
@@ -351,7 +351,7 @@ def find_edges(img_stack, search_start=None, x_avg=None, y_avg=None,
                  + (corner * ~lvec)).to_from_rs() for x in edge_pairs]
 
     except (TypeError, ValueError, IndexError, SystemError) as e:
-        logger.exception(e)
+        _logger.exception(e)
         return None
 
 
@@ -381,12 +381,12 @@ def holes_by_width(edges: Sequence[Tuple[point, point]],
     for i, pair_i in enumerate(edges):
         # Loop through all falling edge points after i
         for pair_next in edges[i:]:
-            logger.debug(f"On index {i} {pair_i!s} looking at {pair_next!s}")
+            _logger.debug(f"On index {i} {pair_i!s} looking at {pair_next!s}")
             center = (pair_i[0] + pair_next[1])/2.
-            logger.debug(f"On index {i} {pair_i[0]!s} to "
+            _logger.debug(f"On index {i} {pair_i[0]!s} to "
                          f"{pair_next[1]!s} center {center!s}")
             dist = (pair_i[0] - pair_next[1]).magnitude
-            logger.debug(f"Point distance is {dist:.2f}")
+            _logger.debug(f"Point distance is {dist:.2f}")
             if abs(dist - width) <= tolerance:
                 edge_pair_centers.append(Hole(center, dist))
 

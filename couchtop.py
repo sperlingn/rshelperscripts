@@ -1,18 +1,17 @@
-import re
-# import pickle
-from points import holes_by_width, point, find_first_edge, find_edges
+from re import compile as re_compile
 from operator import attrgetter
-from case_comment_data import get_case_comment_data, set_case_comment_data
 from ast import literal_eval
 from struct import unpack_from
 
+from .points import holes_by_width, point, find_first_edge, find_edges
 from .rsdicomread import read_dataset
+from .case_comment_data import get_case_comment_data, set_case_comment_data
 
 from .external import get_current, CompositeAction
 
 import logging
 
-logger = logging.getLogger(__name__)
+_logger = logging.getLogger(__name__)
 
 
 CT_Couch_TopY = 20.8
@@ -160,7 +159,7 @@ def guess_couchtop_z(img_stack):
 
         return couch_z
     except Exception as e:
-        logger.exception(e)
+        _logger.exception(e)
         return None
 
 
@@ -198,7 +197,7 @@ def test_for_hn(icase, img_stack):
     else:
         # More complicated, need to test if there is a HN board.
         # For now, warn using warnings
-        logger.warning("Testing for H&N board by searching image is not "
+        _logger.warning("Testing for H&N board by searching image is not "
                        f"implemented yet.  Treatment Site {icase.BodySite} "
                        "is insufficient for use in determination.")
     return False
@@ -235,7 +234,7 @@ def find_table_height(img_stack, resolution=None, search_start=None,
     except TypeError:
         return default
     except (ValueError, IndexError, SystemError) as e:
-        logger.exception(e)
+        _logger.exception(e)
         return default
 
 
@@ -252,7 +251,7 @@ class CouchTop(object):
     isHN = False
     template = None
     isValid = False
-    _desc_re = re.compile(r'(?:Offset:\s(?P<Offset>\d+)'
+    _desc_re = re_compile(r'(?:Offset:\s(?P<Offset>\d+)'
                           r'|Tx Machines:\s(?P<TxMachines>.*)$'
                           r'|Surface:\s"(?P<Surface>[^"]+)")')
 
@@ -263,7 +262,7 @@ class CouchTop(object):
     def __init__(self, Name, Top_offset=None, Surface_ROI="", Tx_Machines="",
                  patient_db=get_current("PatientDB"), structure_set=None):
         self.Name = Name
-        logger.debug(f"Building CouchTop with: {Name}, {Top_offset}, "
+        _logger.debug(f"Building CouchTop with: {Name}, {Top_offset}, "
                      f"{Surface_ROI}, {Tx_Machines}")
 
         try:
@@ -307,7 +306,7 @@ class CouchTop(object):
                             MemoryError, RecursionError):
                         self._Top_offset = None
                     except Exception as e:
-                        logger.exception(e)
+                        _logger.exception(e)
                 if m.group('TxMachines'):
                     self.Tx_Machines = m.group('TxMachines')
 
@@ -325,7 +324,7 @@ class CouchTop(object):
                          y=self._Top_offset['y'],
                          z=self._Top_offset['z'])
         except Exception as e:
-            logger.info(str(e), exc_info=True)
+            _logger.info(str(e), exc_info=True)
             return self._Top_offset
 
     def get_transform(self, structure_set, couch_y=CT_Couch_TopY, z=0.):
@@ -346,7 +345,7 @@ class CouchTop(object):
         # Ensure that transform is a valid matrix of floats as RS will crash if
         # there are nonetypes or anything else in here.
         transform = {k: float(v) for k, v in transform.items()}
-        logger.debug(f'{transform}')
+        _logger.debug(f'{transform}')
         return transform
 
     def add_to_case(self, icase=None, structure_set=None,
@@ -419,13 +418,13 @@ class CouchTop(object):
                                               search_start=search_point,
                                               line_direction='-z',
                                               rising_edge=True)
-                logger.debug(f"Found start of board at {found_point}.")
+                _logger.debug(f"Found start of board at {found_point}.")
                 if found_point:
                     # Naively assume that the first point is the start of the
                     # board
                     z = found_point.z
             except Exception as e:
-                logger.warning(str(e), exc_info=True)
+                _logger.warning(str(e), exc_info=True)
                 return None
         else:
             try:
@@ -499,7 +498,7 @@ class CouchTop(object):
 
                 bot_hole_z = (bp_hole_z + bn_hole_z) / 2
 
-                if logger.level <= logging.DEBUG:
+                if _logger.level <= logging.DEBUG:
                     global __DEBUG__TB__
                     __DEBUG__TB__ = locals()
 
@@ -508,7 +507,7 @@ class CouchTop(object):
                      or abs(tn_hole_z - tp_hole_z) > HN_H_DIAM / 2)):
                     # Holes aren't aligned with eachother, not the same holes
                     # or the board is way to rotated, fail out.
-                    logger.warning(f"Holes not aligned: "
+                    _logger.warning(f"Holes not aligned: "
                                    f"{tn_hole_z}, {tp_hole_z}, "
                                    f"{bn_hole_z}, {bp_hole_z}")
                     return None
@@ -517,14 +516,14 @@ class CouchTop(object):
                     # Holes aren't spaced right, no further checking yet
                     # TODO: Possibly look for additional hole pairs that do
                     # match.
-                    logger.warning(f"Holes not spaced correctly:"
+                    _logger.warning(f"Holes not spaced correctly:"
                                    f" {top_hole_z}, {bot_hole_z}")
                     return None
 
                 # Finally, these look right so return the location of the top
                 # of the board from these holes.  Include the distance from
                 # hole center of the top hole to the edge of the board.
-                logger.debug("Holes for distance: "
+                _logger.debug("Holes for distance: "
                              f"{tn_hole_z}, {tp_hole_z}, "
                              f"{bn_hole_z}, {bp_hole_z}")
 

@@ -5,14 +5,14 @@ import logging
 
 from .external import CompositeAction
 
-logger = logging.getLogger(__name__)
+_logger = logging.getLogger(__name__)
 
 
 def dumps_64(obj):
     try:
         return b64encode(compress(dumps(obj))).decode('utf-8')
     except Exception as e:
-        logger.log(logging.INFO, e)
+        _logger.info(str(e), exc_info=True)
         return None
 
 
@@ -22,7 +22,7 @@ def loads_64(instr):
     except (LZMAError, ValueError, TypeError):
         pass
     except Exception as e:
-        logger.log(e)
+        _logger.exception(e)
 
     return None
 
@@ -41,7 +41,7 @@ def get_case_comment_data(icase, first=False):
                 else:
                     odata.update(data)
     except Exception as e:
-        logger.log(logging.INFO, e)
+        _logger.info(str(e), exc_info=True)
 
     return odata
 
@@ -62,9 +62,8 @@ def set_case_comment_data(icase, data, name='', replace=True):
                 if isinstance(existingdata, dict):
                     existing_dict.update(existingdata)
                 else:
-                    logger.log(logging.WARNING,
-                               "Data in comment string wasn't a dict. "
-                               f"Dropping from stream. ({existingdata})")
+                    _logger.warning("Data in comment string wasn't a dict. "
+                                    f"Dropping from stream. ({existingdata})")
             else:
                 o_str.append(line)
         existing_dict.update(odict)
@@ -78,4 +77,4 @@ def set_case_comment_data(icase, data, name='', replace=True):
         with CompositeAction("Updating Case Comment String with encoded data"):
             icase.Comments = '\n'.join(o_str)
     except Exception as e:
-        logger.warning(str(e), exc_info=True)
+        _logger.warning(str(e), exc_info=True)
