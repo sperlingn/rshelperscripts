@@ -2,7 +2,7 @@ import logging
 from math import sqrt
 from typing import Sequence, List, Tuple
 
-logger = logging.getLogger()
+logger = logging.getLogger(__name__)
 
 
 class point(dict):

@@ -3,15 +3,11 @@ from gzip import open as gzopen, GzipFile
 from io import BytesIO, SEEK_CUR
 import logging
 
-logger = logging.getLogger()
+# PyDICOM read (might not be present)
+from .external import dcmread
 
-try:
-    from pydicom import dcmread
-except ImportError:
-    # If we don't have pydicom in this env, can't do any of this. Just return a
-    # dummy function that returns none.
-    def dcmread(*args, **kwargs):
-        return None
+
+logger = logging.getLogger(__name__)
 
 # Dicom data store in RS is in a gzipped format with multiple files stuck
 # together.  There are some (seemingly) standard headers for the file data, and

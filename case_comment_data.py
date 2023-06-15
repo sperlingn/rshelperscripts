@@ -1,10 +1,11 @@
 from pickle import dumps, loads
 from lzma import compress, decompress, LZMAError
 from base64 import b64encode, b64decode
-from connect import CompositeAction
 import logging
 
-logger = logging.getLogger()
+from .external import CompositeAction
+
+logger = logging.getLogger(__name__)
 
 
 def dumps_64(obj):

@@ -1,16 +1,18 @@
 import re
-from connect import get_current, CompositeAction  # , set_progress
 # import pickle
 from points import holes_by_width, point, find_first_edge, find_edges
 from operator import attrgetter
 from case_comment_data import get_case_comment_data, set_case_comment_data
 from ast import literal_eval
-from rsdicomread import read_dataset
 from struct import unpack_from
+
+from .rsdicomread import read_dataset
+
+from .external import get_current, CompositeAction
 
 import logging
 
-logger = logging.getLogger()
+logger = logging.getLogger(__name__)
 
 
 CT_Couch_TopY = 20.8
@@ -386,8 +388,8 @@ class CouchTop(object):
         if 'board_z' not in case_data and CouchTop._board_z:
             case_data['board_z'] = CouchTop._board_z
             set_case_comment_data(data=case_data,
-                                    icase=icase,
-                                    replace=True)
+                                  icase=icase,
+                                  replace=True)
 
     def update(self, structure_set):
         rois = {roi.OfRoi.Name for roi in structure_set.RoiGeometries}
@@ -414,12 +416,13 @@ class CouchTop(object):
             try:
                 search_point = point(y=search_y)
                 found_point = find_first_edge(img_stack,
-                                            search_start=search_point,
-                                            line_direction='-z',
-                                            rising_edge=True)
+                                              search_start=search_point,
+                                              line_direction='-z',
+                                              rising_edge=True)
                 logger.debug(f"Found start of board at {found_point}.")
                 if found_point:
-                    # Naively assume that the first point is the start of the board
+                    # Naively assume that the first point is the start of the
+                    # board
                     z = found_point.z
             except Exception as e:
                 logger.warning(str(e), exc_info=True)
