@@ -2,6 +2,7 @@ from re import compile as re_compile
 from operator import attrgetter
 from ast import literal_eval
 from struct import unpack_from
+from inspect import getargspec
 
 from .points import holes_by_width, point, find_first_edge, find_edges
 from .rsdicomread import read_dataset
@@ -236,6 +237,23 @@ def find_table_height(img_stack, resolution=None, search_start=None,
     except (ValueError, IndexError, SystemError) as e:
         _logger.exception(e)
         return default
+
+def get_or_find_table_height(icase, resolution=None, search_start=None,
+                             x_avg=None, z_avg=1., default=CT_Couch_TopY,
+                             force=False, store=True):
+
+    _, _, fth_kawg_list, _ = getargspec(find_table_height)
+    fth_kwargs = {k:v for k,v in locals().items() if k in fth_kawg_list}
+    case_data = get_case_comment_data(icase)
+    if 'couch_y' in case_data and not force:
+        return case_data['couch_y']
+    else:
+        couch_y = find_table_height(**fth_kwargs)
+
+    if store:
+        set_case_comment_data(name='couch_y', data=couch_y, icase=icase)
+
+    return couch_y
 
 
 class CouchTop(object):
