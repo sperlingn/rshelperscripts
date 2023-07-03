@@ -8,7 +8,8 @@ from .case_comment_data import *  # noqa: W401, W611
 from .couchtop import *           # noqa: W401, W611
 from .points import *             # noqa: W401, W611
 from .rsdicomread import *        # noqa: W401, W611
-from .dosetools import *        # noqa: W401, W611
+from .dosetools import *          # noqa: W401, W611
+from .external import get_current, CompositeAction # noqa: W611
 
 del logging                       # noqa: E602
 

@@ -3,10 +3,12 @@ from operator import attrgetter
 from ast import literal_eval
 from struct import unpack_from
 from inspect import getargspec
+from System import ArgumentOutOfRangeException
 
 from .points import holes_by_width, point, find_first_edge, find_edges
 from .rsdicomread import read_dataset
 from .case_comment_data import get_case_comment_data, set_case_comment_data
+from .dosetools import invalidate_structureset_doses
 
 from .external import get_current, CompositeAction
 
@@ -14,6 +16,10 @@ import logging
 
 _logger = logging.getLogger(__name__)
 
+# TODO: Replace img_stack in uses with series, allowing us to store the board_z
+# dict in the case with the ImportedDicomUID of the series, instead of the
+# reference in memory of the img_stack object
+#   (e.g. '1.2......' instead of '<ScriptObject id=-2147404801>')
 
 CT_Couch_TopY = 20.8
 CT_Top_NegativeX = -24.5
@@ -199,8 +205,8 @@ def test_for_hn(icase, img_stack):
         # More complicated, need to test if there is a HN board.
         # For now, warn using warnings
         _logger.warning("Testing for H&N board by searching image is not "
-                       f"implemented yet.  Treatment Site {icase.BodySite} "
-                       "is insufficient for use in determination.")
+                        f"implemented yet.  Treatment Site {icase.BodySite} "
+                        "is insufficient for use in determination.")
     return False
 
 
@@ -238,12 +244,17 @@ def find_table_height(img_stack, resolution=None, search_start=None,
         _logger.exception(e)
         return default
 
-def get_or_find_table_height(icase, resolution=None, search_start=None,
-                             x_avg=None, z_avg=1., default=CT_Couch_TopY,
-                             force=False, store=True):
 
-    _, _, fth_kawg_list, _ = getargspec(find_table_height)
-    fth_kwargs = {k:v for k,v in locals().items() if k in fth_kawg_list}
+def get_or_find_table_height(img_stack, /, icase=None, resolution=None,
+                             search_start=None, x_avg=None, z_avg=1.,
+                             default=CT_Couch_TopY, force=False, store=True):
+
+    fth_kwarg_list, _, _, _ = getargspec(find_table_height)
+    fth_kwargs = {k: v for k, v in locals().items() if k in fth_kwarg_list}
+
+    if not icase:
+        return find_table_height(**fth_kwargs)
+
     case_data = get_case_comment_data(icase)
     if 'couch_y' in case_data and not force:
         return case_data['couch_y']
@@ -281,7 +292,7 @@ class CouchTop(object):
                  patient_db=get_current("PatientDB"), structure_set=None):
         self.Name = Name
         _logger.debug(f"Building CouchTop with: {Name}, {Top_offset}, "
-                     f"{Surface_ROI}, {Tx_Machines}")
+                      f"{Surface_ROI}, {Tx_Machines}")
 
         try:
             self.template = patient_db.LoadTemplatePatientModel(
@@ -526,8 +537,8 @@ class CouchTop(object):
                     # Holes aren't aligned with eachother, not the same holes
                     # or the board is way to rotated, fail out.
                     _logger.warning(f"Holes not aligned: "
-                                   f"{tn_hole_z}, {tp_hole_z}, "
-                                   f"{bn_hole_z}, {bp_hole_z}")
+                                    f"{tn_hole_z}, {tp_hole_z}, "
+                                    f"{bn_hole_z}, {bp_hole_z}")
                     return None
 
                 if abs(abs(top_hole_z - bot_hole_z) - HN_H_SEP) > HN_H_DIAM:
@@ -535,15 +546,15 @@ class CouchTop(object):
                     # TODO: Possibly look for additional hole pairs that do
                     # match.
                     _logger.warning(f"Holes not spaced correctly:"
-                                   f" {top_hole_z}, {bot_hole_z}")
+                                    f" {top_hole_z}, {bot_hole_z}")
                     return None
 
                 # Finally, these look right so return the location of the top
                 # of the board from these holes.  Include the distance from
                 # hole center of the top hole to the edge of the board.
                 _logger.debug("Holes for distance: "
-                             f"{tn_hole_z}, {tp_hole_z}, "
-                             f"{bn_hole_z}, {bp_hole_z}")
+                              f"{tn_hole_z}, {tp_hole_z}, "
+                              f"{bn_hole_z}, {bp_hole_z}")
 
                 z = (((top_hole_z + bot_hole_z + HN_H_SEP) / 2)
                      + HN_H1_TO_H2_Z + HN_H1_TO_BOARD_Z)
@@ -729,3 +740,41 @@ class CouchTopCollection(object):
 
     def __repr__(self):
         return str(self)
+
+
+def addcouchtoexam(icase, examination, plan=None, simple_search=False,
+                   patient_db=get_current("PatientDB")):
+
+    structure_set = icase.PatientModel.StructureSets[examination.Name]
+    img_stack = examination.Series[0].ImageStack
+
+    tops = CouchTopCollection(use_known=True)
+
+    existing_tops = tops.get_tops_in_structure_set(structure_set)
+
+    # Remove all existing tops.
+    with CompositeAction("Remove Existing Tops"):
+        invalidate_structureset_doses(icase=icase, structure_set=structure_set)
+        while existing_tops:
+            existing_tops.pop().remove_from_case()
+
+    top_height = get_or_find_table_height(img_stack, icase=icase)
+    isHN = test_for_hn(icase, img_stack)
+    machine = ''
+    try:
+        if plan is None:
+            _logger.warning("No plan selected, trying first plan.")
+            plan = icase.TreatmentPlans[0]
+            machine = plan.BeamSets[0].MachineReference.MachineName
+    except (ArgumentOutOfRangeException, IndexError):
+        _logger.info("Couldn't determine machine. "
+                     "Guessing based on the current case.")
+        machine = guess_machine(icase)
+    except Exception as e:
+        _logger.exception(e)
+
+    top = tops.get_first_top(machine=machine, isHN=isHN)
+
+    with CompositeAction(f"Add {top.Name} to case"):
+        top.add_to_case(icase, structure_set, top_height,
+                        simple_search=simple_search)
