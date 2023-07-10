@@ -1,5 +1,5 @@
 import logging
-from math import sqrt
+from math import sqrt, sin, cos, pi
 from typing import Sequence, List, Tuple
 
 _logger = logging.getLogger(__name__)
@@ -306,10 +306,10 @@ def find_edges(img_stack, search_start=None, x_avg=None, y_avg=None,
     corner.to_from_rs()
 
     _logger.debug(f"ires:\t{img_res}\n"
-                 f"np:\t{n_pixels}\n"
-                 f"size:\t{size}\n"
-                 f"res:\t{resolution}\n"
-                 f"vc:\t{voxelcount}")
+                  f"np:\t{n_pixels}\n"
+                  f"size:\t{size}\n"
+                  f"res:\t{resolution}\n"
+                  f"vc:\t{voxelcount}")
 
     voxelsizes = resolution
 
@@ -384,10 +384,156 @@ def holes_by_width(edges: Sequence[Tuple[point, point]],
             _logger.debug(f"On index {i} {pair_i!s} looking at {pair_next!s}")
             center = (pair_i[0] + pair_next[1])/2.
             _logger.debug(f"On index {i} {pair_i[0]!s} to "
-                         f"{pair_next[1]!s} center {center!s}")
+                          f"{pair_next[1]!s} center {center!s}")
             dist = (pair_i[0] - pair_next[1]).magnitude
             _logger.debug(f"Point distance is {dist:.2f}")
             if abs(dist - width) <= tolerance:
                 edge_pair_centers.append(Hole(center, dist))
 
     return sorted(edge_pair_centers)
+
+
+class _M():
+    _I = [[1, 0, 0],
+          [0, 1, 0],
+          [0, 0, 1]]
+    matrix = None
+    """Simple matrix class for 3x3"""
+    def __init__(self, matrix=None):
+        if matrix is None:
+            matrix = self._I
+        elif hasattr(matrix, 'matrix'):
+            matrix = matrix.matrix
+        elif len(matrix) != 3 or any([len(r) != 3 for r in matrix]):
+            raise ValueError("Must be a 3x3 matrix.")
+
+        self.matrix = [[v for v in r] for r in matrix]
+
+    def __mul__(self, other):
+        m = [[sum(left*right for left, right in zip(lrow, rcol))
+              for rcol in zip(*other.matrix)]
+             for lrow in self.matrix]
+        return type(self)(m)
+
+    def __imul__(self, other):
+        self.matrix = (self*other).matrix
+        return self
+
+    def __repr__(self):
+        return '{}({})'.format(self.__class__.__name__, repr(self.matrix))
+
+    def __str__(self):
+        return '[{}]'.format(',\n'.join(map(repr, self.matrix)))
+
+    def __iter__(self):
+        return self.matrix.__iter__()
+
+
+class AffineMatrix():
+    x = 0
+    y = 0
+    z = 0
+
+    pitch = 0
+    yaw = 0
+    roll = 0
+
+    order = 'pyr'
+    _gantry_order = 'ryp'
+
+    rot_mats = None
+    _trans = None
+
+    def __init__(self, x=0, y=0, z=0, pitch=0, yaw=0, roll=0,
+                 invert_t=False, order='pyr'):
+        self.x = x
+        self.y = y
+        self.z = z
+        self.pitch = pitch
+        self.yaw = yaw
+        self.roll = roll
+        self.invert_t = invert_t
+
+        self.rot_mats = {}
+
+        self.order = order
+        self._validate_order()
+
+    def _validate_order(self):
+        if self.order.lower() == 'gantry':
+            self.order = self._gantry_order
+        elif (set([x for x in self.order]) != {'p', 'y', 'r'}
+              or len(self.order) != 3):
+            self.order = 'pyr'
+
+    def _rebuild_matrices(self):
+        alpha = self.roll
+        beta = self.yaw
+        gamma = self.pitch
+
+        sa = sin(alpha*pi/180.)
+        ca = cos(alpha*pi/180.)
+        sb = sin(beta*pi/180.)
+        cb = cos(beta*pi/180.)
+        sg = sin(gamma*pi/180.)
+        cg = cos(gamma*pi/180.)
+
+        self.rot_mats['p'] = _M([[  1,   0,   0],   # noqa: E201
+                                 [  0,  cg, -sg],   # noqa: E201
+                                 [  0,  sg,  cg]])  # noqa: E201
+        self.rot_mats['y'] = _M([[ cb,   0,  sb],   # noqa: E201
+                                 [  0,   1,   0],   # noqa: E201
+                                 [-sb,   0,  cb]])  # noqa: E201
+        self.rot_mats['r'] = _M([[ ca, -sa,   0],   # noqa: E201
+                                 [ sa,  ca,   0],   # noqa: E201
+                                 [  0,   0,   1]])  # noqa: E201
+
+        out_mat = _M()
+
+        self._validate_order()
+
+        for card in self.order[::-1]:
+            out_mat *= self.rot_mats[card]
+
+        self._rot_matrix = out_mat
+        self._trans = [self.x, self.y, self.z]
+
+    @property
+    def matrix(self):
+        self._rebuild_matrices()
+        m = _M(self._rot_matrix)
+        return (list(map(list.__add__, m, [[v] for v in self._trans]))
+                + [[0, 0, 0, 1]])
+
+    @property
+    def rs_matrix(self):
+        """
+        Get matrix for Raystation given transform.  Angles in degrees.
+        (default for Presented for pitch, then yaw, then roll).
+
+        alpha = self.roll
+        beta = self.yaw
+        gamma = self.pitch
+
+        sa = sin(alpha*pi/180.)
+        ca = cos(alpha*pi/180.)
+        sb = sin(beta*pi/180.)
+        cb = cos(beta*pi/180.)
+        sg = sin(gamma*pi/180.)
+        cg = cos(gamma*pi/180.)
+        x = self.x*(-1)**int(self.invert_t)
+        y = self.y*(-1)**int(self.invert_t)
+        z = self.z*(-1)**int(self.invert_t)
+
+        m = {'M11': ca*cb, 'M12': ca*sb*sg-sa*cg,
+        'M13': ca*sb*cg+sa*sg, 'M14': x,
+        'M21': sa*cb, 'M22': sa*sb*sg+ca*cg, 'M23': sa*sb*cg-ca*sg, 'M24': y,
+        'M31': -sb,   'M32': cb*sg,          'M33': cb*cg,          'M34': z,
+        'M41': 0,     'M42': 0,              'M43': 0,              'M44': 1}
+        """
+        m = self.matrix
+        odict = {'M{}{}'.format(ri+1, ci+1): value
+                 for ri, row in enumerate(m)
+                 for ci, value in enumerate(row)}
+
+        return odict
