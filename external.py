@@ -1,5 +1,7 @@
 import logging as _logging
 
+from System.Windows import MessageBox as _MessageBox
+
 _logger = _logging.getLogger(__name__)
 
 
@@ -82,8 +84,11 @@ finally:
         if CompositeAction._clsinstance is not None:
             # Log a warning (include traceback info to help trace cause)
             _logger.warning("Tried to call await_user_input during a composite"
-                            " action.  This leads to a crash. Ignoring call.\m"
+                            " action.  This leads to a crash. Ignoring call.\n"
                             "Message was: '{}'".format(msg), exc_info=True)
+            return _MessageBox.Show("{}".format(msg), "Awaiting Input",
+                                    # Always on top = 131072
+                                    1, 0, 0, 131072)
 
         else:
             return _await_user_input(msg)
