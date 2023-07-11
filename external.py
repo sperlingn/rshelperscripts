@@ -1,6 +1,6 @@
-import logging
+import logging as _logging
 
-_logger = logging.getLogger(__name__)
+_logger = _logging.getLogger(__name__)
 
 
 class _CompositeActionDummy():
@@ -13,18 +13,19 @@ class _CompositeActionDummy():
             self._name = args[0]
 
     def __enter__(self):
-        _logger.info(f"Entered {self._name} Undo state.")
+        _logger.info("Entered {} Undo state.".format(self._name))
         return self
 
     def __exit__(self, e_type, e, e_traceback):
         if e_type is not None:
-            _logger.exception()
+            _logger.exception('{!s}'.format(e))
 
-        _logger.info(f"Exited  {self._name} Undo state.")
+        _logger.info("Exited  {} Undo state.".format(self._name))
 
 
 try:
-    from connect import get_current, CompositeAction as _CompositeActionOrig
+    from connect import (get_current, CompositeAction as _CompositeActionOrig,
+                         await_user_input as _await_user_input)
 
 except ImportError:
     # Replacement functions when not running in RS
@@ -36,6 +37,9 @@ except ImportError:
 
     class _CompositeActionOrig(_CompositeActionDummy):
         pass
+
+    def _await_user_input(msg):
+        _logger.logging("Waited for user input: '{}'".format(msg))
 
 finally:
 
@@ -71,6 +75,19 @@ finally:
 
             return rv
 
+    def await_user_input(msg):
+        # Wrapper to prevent await_user_input from spawning during a composite
+        # action context manager.
+
+        if CompositeAction._clsinstance is not None:
+            # Log a warning (include traceback info to help trace cause)
+            _logger.warning("Tried to call await_user_input during a composite"
+                            " action.  This leads to a crash. Ignoring call.\m"
+                            "Message was: '{}'".format(msg), exc_info=True)
+
+        else:
+            return _await_user_input(msg)
+
 try:
     from pydicom import dcmread
 except ImportError:
@@ -79,4 +96,4 @@ except ImportError:
     def dcmread(*args, **kwargs):
         return None
 
-__all__ = [dcmread, CompositeAction, get_current]
+# __all__ = [dcmread, CompositeAction, get_current]
