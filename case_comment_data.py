@@ -50,6 +50,13 @@ def get_data(text, first=False):
 
 
 def build_data_str(existing_text='', data=None, name='', replace=True):
+    if isinstance(existing_text, str):
+        existing_text = existing_text.splitlines()
+    elif isinstance(existing_text, list) or isinstance(existing_text, tuple):
+        existing_text = list(*existing_text)
+    else:
+        existing_text = []
+
     o_str = []
     if isinstance(data, dict) and not name:
         odict = dict(data)
@@ -78,7 +85,6 @@ def build_data_str(existing_text='', data=None, name='', replace=True):
     return '\n'.join(o_str)
 
 
-
 def get_case_comment_data(icase, first=False):
     """
     Pulls first pickled data in the case comment field.
@@ -90,7 +96,8 @@ def set_case_comment_data(icase, data, name='', replace=True):
     """
     Store the data in the case.Comments as a base64 string.
     """
-    comment_str = icase.Comments.splitlines()
+    comment_str = icase.Comments
+
     new_comment = build_data_str(comment_str, data, name, replace)
 
     try:
