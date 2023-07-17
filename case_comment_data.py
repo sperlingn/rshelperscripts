@@ -27,13 +27,16 @@ def loads_64(instr):
     return None
 
 
-def get_case_comment_data(icase, first=False):
+def get_data(text, first=False):
     """
-    Pulls first pickled data in the case comment field.
+    Pulls pickled data in the string field.  If first is True, stops after the
+    first successful unpickling.
+    Will also split data along spaces and tabs, as both are disallowed in
+    base64 and may be needed for single line fields.
     """
     odata = {}
     try:
-        for line in icase.Comments.splitlines():
+        for line in text.split():
             data = loads_64(line)
             if data:
                 if first:
@@ -46,8 +49,7 @@ def get_case_comment_data(icase, first=False):
     return odata
 
 
-def set_case_comment_data(icase, data, name='', replace=True):
-    comment_str = icase.Comments.splitlines()
+def build_data_str(existing_text='', data=None, name='', replace=True):
     o_str = []
     if isinstance(data, dict) and not name:
         odict = dict(data)
@@ -56,7 +58,7 @@ def set_case_comment_data(icase, data, name='', replace=True):
 
     if replace:
         existing_dict = {}
-        for line in comment_str:
+        for line in existing_text:
             existingdata = loads_64(line)
             if existingdata:
                 if isinstance(existingdata, dict):
@@ -69,12 +71,30 @@ def set_case_comment_data(icase, data, name='', replace=True):
         existing_dict.update(odict)
         odict = existing_dict
     else:
-        o_str = comment_str
+        o_str = existing_text
 
     o_str.append(dumps_64(odict))
 
+    return '\n'.join(o_str)
+
+
+
+def get_case_comment_data(icase, first=False):
+    """
+    Pulls first pickled data in the case comment field.
+    """
+    return get_data(icase.Comments, first)
+
+
+def set_case_comment_data(icase, data, name='', replace=True):
+    """
+    Store the data in the case.Comments as a base64 string.
+    """
+    comment_str = icase.Comments.splitlines()
+    new_comment = build_data_str(comment_str, data, name, replace)
+
     try:
         with CompositeAction("Updating Case Comment String with encoded data"):
-            icase.Comments = '\n'.join(o_str)
+            icase.Comments = new_comment
     except Exception as e:
         _logger.warning(str(e), exc_info=True)
