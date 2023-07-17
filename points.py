@@ -43,6 +43,18 @@ class point(dict):
             pass
         return False
 
+    @classmethod
+    def X(cls):
+        return cls(1., 0., 0.)
+
+    @classmethod
+    def Y(cls):
+        return cls(0., 1., 0.)
+
+    @classmethod
+    def Z(cls):
+        return cls(0., 0., 1.)
+
     @property
     def x(self):
         return self['x']
@@ -83,6 +95,9 @@ class point(dict):
             return type(self)({key: self[key] + (other[key] if key in other
                                                  else 0)
                                for key in self})
+        elif isinstance(other, tuple) and len(other) == len(self):
+            return type(self)({key: self[key] + other[i]
+                               for i, key in enumerate(self)})
         else:
             return type(self)({key: self[key] + other for key in self})
 
@@ -100,6 +115,9 @@ class point(dict):
             return type(self)({key: self[key] * (other[key] if key in other
                                                  else 0)
                                for key in self})
+        elif isinstance(other, tuple) and len(other) == len(self):
+            return type(self)({key: self[key] * other[i]
+                               for i, key in enumerate(self)})
         else:
             return type(self)({key: self[key] * other for key in self})
 
@@ -131,25 +149,18 @@ class point(dict):
             return type(self)({key: int(not self[key]) for key in self})
 
     def __iadd__(self, other):
-        for key in self:
-            if self.__ispointlike__(other):
-                self[key] += other[key]
-            else:
-                self[key] += other
-                return self
+        new = self + other
+        for key in new:
+            self[key] = new[key]
+        return self
 
     def __isub__(self, other):
         return self.__iadd__(-other)
 
     def __imul__(self, other):
-        for key in self:
-            if self.__ispointlike__(other):
-                if key in other:
-                    self[key] *= other[key]
-                else:
-                    self[key] = 0
-            else:
-                self[key] *= other
+        new = self * other
+        for key in new:
+            self[key] = new[key]
         return self
 
     def __idiv__(self, other):
