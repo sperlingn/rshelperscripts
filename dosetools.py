@@ -20,9 +20,12 @@ def invalidate_structureset_doses(icase, structure_set):
                 if (fd.OnDensity
                         and fd.OnDensity.FromExamination.Name == exam_name):
                     grid = bs.GetDoseGrid()
-                    bs.UpdateDoseGrid(Corner=grid.Corner,
-                                      VoxelSize=grid.VoxelSize,
+                    corner = dict(**grid.Corner)
+                    vs = dict(**grid.VoxelSize)
+                    nrvox = dict(**grid.NrVoxels)
+                    bs.UpdateDoseGrid(Corner=corner,
+                                      VoxelSize=vs,
                                       NumberOfVoxels={'x': 1, 'y': 1, 'z': 1})
-                    bs.UpdateDoseGrid(Corner=grid.Corner,
-                                      VoxelSize=grid.VoxelSize,
-                                      NumberOfVoxels=grid.NrVoxels)
+                    bs.UpdateDoseGrid(Corner=corner,
+                                      VoxelSize=vs,
+                                      NumberOfVoxels=nrvox)
