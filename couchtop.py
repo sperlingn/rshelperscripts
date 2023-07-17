@@ -3,11 +3,22 @@ from operator import attrgetter
 from ast import literal_eval
 from struct import unpack_from
 from inspect import getargspec
-from System import ArgumentOutOfRangeException
+
+try:
+    from System import ArgumentOutOfRangeException
+    from System.Windows import MessageBox as _MessageBox
+except ImportError:
+    ArgumentOutOfRangeException = IndexError
+
+    class _MessageBox:
+        def Show(*args, **kwargs):
+            _logger.info("MessageBox: args={}, kwargs={}", args, kwargs)
+            return True
 
 from .points import holes_by_width, point, find_first_edge, find_edges
 from .rsdicomread import read_dataset
-from .case_comment_data import get_case_comment_data, set_case_comment_data
+from .case_comment_data import (get_case_comment_data, set_case_comment_data,
+                                get_data)
 from .dosetools import invalidate_structureset_doses
 
 from .external import get_current, CompositeAction
@@ -16,7 +27,7 @@ import logging
 
 _logger = logging.getLogger(__name__)
 
-# TODO: Replace img_stack in uses with series, allowing us to store the board_z
+# TODO: Replace img_stack in uses with series, allowing us to store the offset
 # dict in the case with the ImportedDicomUID of the series, instead of the
 # reference in memory of the img_stack object
 #   (e.g. '1.2......' instead of '<ScriptObject id=-2147404801>')
@@ -68,21 +79,21 @@ DEFAULT_MACHINE = 'TrueBeam'
 # into the collection.
 KNOWN_TOPS = {
     'TrueBeam Couch Model':
-        {'Surface_ROI': 'Surface Shell - TrueBeam',
-         'Top_offset': {'x': 0., 'y': 0., 'z': 0.},
-         'Tx_Machines': 'TrueBeam'},
+        {'surface_roi': 'Surface Shell - TrueBeam',
+         'default_offset': {'x': 0., 'y': 0., 'z': 0.},
+         'tx_machines': 'TrueBeam'},
     'Edge Couch Model':
-        {'Surface_ROI': 'Outer Shell - Edge',
-         'Top_offset': {'x': 0., 'y': 0., 'z': 0.},
-         'Tx_Machines': 'Edge'},
+        {'surface_roi': 'Outer Shell - Edge',
+         'default_offset': {'x': 0., 'y': 0., 'z': 0.},
+         'tx_machines': 'Edge'},
     'Edge Head & Neck Model':
-        {'Surface_ROI': 'Outer Shell - Edge H&N',
-         'Top_offset': {'x': -.1, 'y': -2.33, 'z': 0.4},
-         'Tx_Machines': 'Edge'},
+        {'surface_roi': 'Outer Shell - Edge H&N',
+         'default_offset': {'x': -.1, 'y': -2.33, 'z': 0.4},
+         'tx_machines': 'Edge'},
     'TrueBeam Head & Neck Model':
-        {'Surface_ROI': 'Surface Shell - TrueBeam',
-         'Top_offset': {'x': 0.15, 'y': 0., 'z': 0.4},
-         'Tx_Machines': 'TrueBeam'}
+        {'surface_roi': 'Surface Shell - TrueBeam',
+         'default_offset': {'x': 0.15, 'y': 0., 'z': 0.4},
+         'tx_machines': 'TrueBeam'}
 }
 
 
@@ -140,7 +151,7 @@ struct DCM_TAG_01F7_1027
 
 # DICOM Search
 PRIV_01F7_1027 = (0x01F7, 0x1027)
-HEURISTIC_OFFSET = 1500
+HEURISTIC_OFFSET = 1526
 
 
 def guess_couchtop_z(img_stack):
@@ -162,12 +173,41 @@ def guess_couchtop_z(img_stack):
         abs_couch_pos = cdist + HEURISTIC_OFFSET
         ippscale = ipp / sliceloc
 
-        couch_z = abs_couch_pos * ippscale
+        couch_z = ( abs_couch_pos * ippscale ) / 10.
+        _logger.debug('{}'.format(locals()))
 
         return couch_z
     except Exception as e:
-        _logger.exception(e)
+        _logger.exception("Problem reading CT data")
         return None
+
+
+def guess_board_x_center(img_stack, couch_y):
+    search_y = couch_y + HN_SEARCH_DELTA
+
+    init_guess = point(x=HN_H2_X, y=search_y)
+    # TODO: Put this in a try-except and fail to a new z for
+    # finding the width.
+    # Need to account for top hole not being on image
+    guess_edges = find_edges(img_stack, search_start=init_guess,
+                                line_direction='-z', z_avg=0.05)
+    guess_holes = holes_by_width(edges=guess_edges,
+                                width=HN_H_DIAM,
+                                tolerance=1.)
+    if guess_holes:
+        init_guess.z = guess_holes[-1].center.z
+    else:
+        init_guess.z = (img_stack.Corner.z
+                        + (max(img_stack.SlicePositions)/2))
+
+    width_edges = find_edges(img_stack, search_start=init_guess,
+                                line_direction='x')
+
+    if width_edges:
+        x_offset = (width_edges[-1][1].x + width_edges[0][0].x)/2
+    else:
+        x_offset = 0
+    return x_offset
 
 
 def guess_machine(icase):
@@ -204,6 +244,16 @@ def test_for_hn(icase, img_stack):
     else:
         # More complicated, need to test if there is a HN board.
         # For now, warn using warnings
+        msg = ("Couldn't determine if this is a H&N patient from site '{}'\n"
+               "Should this be an H&N patient?").format(icase.BodySite)
+        title = "H&N Board in use?"
+        buttons = 4     # Yes/No
+        icon = 32       # Question?
+
+        # System.Forms.DialogResult.Yes == 6
+        isHN = _MessageBox.Show(msg, title, buttons, icon) == 6
+        return isHN
+
         _logger.warning("Testing for H&N board by searching image is not "
                         f"implemented yet.  Treatment Site {icase.BodySite} "
                         "is insufficient for use in determination.")
@@ -271,10 +321,10 @@ class CouchTop(object):
     Name = ""
 
     ROI_Names = None
-    Top_offset = None  # {'x': 0., 'y': 0., 'z': '0.'},
-    Tx_Machines = None
+    default_offset = (0,0,0)
+    tx_machines = None
     _tx_machines_set = None
-    _board_z = None
+    _board_offset = None
 
     roi_geometries = None
     isHN = False
@@ -284,15 +334,18 @@ class CouchTop(object):
                           r'|Tx Machines:\s(?P<TxMachines>.*)$'
                           r'|Surface:\s"(?P<Surface>[^"]+)")')
 
+    _updateable = ['surface_roi', 'tx_machines', 'default_offset']
+
     _surfaceboundingbox = None
 
     inActiveSet = False
 
-    def __init__(self, Name, Top_offset=None, Surface_ROI="", Tx_Machines="",
+    def __init__(self, Name,
+                 default_offset=None, surface_roi=None, tx_machines=None,
                  patient_db=get_current("PatientDB"), structure_set=None):
         self.Name = Name
-        _logger.debug(f"Building CouchTop with: {Name}, {Top_offset}, "
-                      f"{Surface_ROI}, {Tx_Machines}")
+        _logger.debug(f"Building CouchTop with: {Name=}, {default_offset=}, "
+                      f"{surface_roi=}, {tx_machines=}")
 
         try:
             self.template = patient_db.LoadTemplatePatientModel(
@@ -303,14 +356,11 @@ class CouchTop(object):
 
             self._build_from_description()
 
-            self._Top_offset = Top_offset if Top_offset else self._Top_offset
-            self.Surface_ROI = Surface_ROI if Surface_ROI else self.Surface_ROI
-            self.isHN = True if "H&N" in "".join(self.ROI_Names) else False
-            self.Tx_Machines = Tx_Machines if Tx_Machines else self.Tx_Machines
+            params = {k: v for k, v in locals().items()
+                      if k in self._updateable}
+            self.update_params(**params)
 
-            self._tx_machines_set = self.machine_set(self.Tx_Machines)
-
-            self.isValid = self.Surface_ROI in self.ROI_Names
+            self.isValid = self.surface_roi in self.ROI_Names
 
             if structure_set:
                 self.update()
@@ -319,62 +369,105 @@ class CouchTop(object):
             # No template in patient_db by this name.
             pass
 
+    def update_params(self, **kwargs):
+        # Filter against those parameters that we have deemed safe to update.
+        updated = False
+        try:
+            for k in (k for k in kwargs if k in self._updateable
+                      and kwargs[k] is not None):
+                setattr(self, k, kwargs[k])
+                _logger.debug(f"Updated {self.Name}.{k}={kwargs[k]}")
+                updated = True
+        except (ValueError, KeyError, IndexError):
+            _logger.debug("Error updating parameters.", exc_info=True)
+
+        return updated
+
     def _build_from_description(self):
         if self.template.Description:
+            # First see if there is data stored in base64
+            data = get_data(self.template.Description)
+            if data:
+                _logger.debug(f"Found stored params in description {data=}")
+                if self.update_params(**data):
+                    return
+
             for m in self._desc_re.finditer(self.template.Description):
                 if m.group('Surface'):
-                    self.Surface_ROI = m.group('Surface')
+                    self.surface_roi = m.group('Surface')
                 if m.group('Offset'):
                     try:
                         offset = literal_eval(m.group('Offset'))
                         if isinstance(offset, float):
-                            self._Top_offset = point(y=offset)
+                            self.default_offset = point(y=offset)
                         elif isinstance(offset, tuple):
-                            self._Top_offset = point(*offset)
+                            self.default_offset = point(*offset)
                     except (ValueError, TypeError, SyntaxError,
                             MemoryError, RecursionError):
-                        self._Top_offset = None
+                        self.default_offset = point()
                     except Exception as e:
                         _logger.exception(e)
                 if m.group('TxMachines'):
-                    self.Tx_Machines = m.group('TxMachines')
+                    self.tx_machines = m.group('TxMachines')
 
     @staticmethod
     def machine_set(inmachinename):
-        namelow = inmachinename.lower()
-        return set(namelow.replace('\n', ',').replace(' ', '').split(','))
+        try:
+            inset = inmachinename._tx_machines_set
+            return inset
+        except AttributeError:
+            pass
+
+        if isinstance(inmachinename, str):
+            name = inmachinename.lower()
+        else:
+            name = '\n'.join(inmachinename).lower()
+
+        # replace all newlines with ',', get rid of spaces, then split on ','
+        nameiter = name.replace('\n', ',').replace(' ', '').split(',')
+        return set(nameiter)
+
+    @property
+    def _tx_machines_set(self):
+        return self.machine_set(self.tx_machines)
+
+    @property
+    def isHN(self):
+        return "HN" in "".join(self.ROI_Names).replace("&","")
 
     @property
     def Top_offset(self):
         try:
             surf_bb = self._surfaceboundingbox
-            x_offset = (surf_bb[0].x + surf_bb[1].x) / 2.
-            return point(x=-x_offset+self._Top_offset['x'],
-                         y=self._Top_offset['y'],
-                         z=self._Top_offset['z'])
+            x_offset = point(x=(surf_bb[0].x + surf_bb[1].x) / 2.)
+            _logger.debug(f"{self.default_offset=}, {x_offset=}")
+            return point(self.default_offset) - x_offset
         except Exception as e:
             _logger.info(str(e), exc_info=True)
-            return self._Top_offset
+            return self.default_offset
 
-    def get_transform(self, structure_set, couch_y=CT_Couch_TopY, z=0.):
+    def get_transform(self, structure_set, offset):
 
         # get from position of top, need ROIs to be present.
-        surface_roi = structure_set.RoiGeometries[self.Surface_ROI]
+        surface_roi = structure_set.RoiGeometries[self.surface_roi]
 
         self._surfaceboundingbox = surface_roi.GetBoundingBox()
-        current_y = self._surfaceboundingbox[0].y
 
-        y = couch_y - current_y
-        pt = point(x=0, y=y, z=z) + self.Top_offset
+        pt = offset + self.Top_offset - point.Y() * self._surfaceboundingbox[0]
         transform = {'M11': 1, 'M12': 0, 'M13': 0, 'M14': pt.x,
                      'M21': 0, 'M22': 1, 'M23': 0, 'M24': pt.y,
                      'M31': 0, 'M32': 0, 'M33': 1, 'M34': pt.z,
                      'M41': 0, 'M42': 0, 'M43': 0, 'M44': 1}
 
+        _logger.debug(f'{transform}')
         # Ensure that transform is a valid matrix of floats as RS will crash if
         # there are nonetypes or anything else in here.
-        transform = {k: float(v) for k, v in transform.items()}
-        _logger.debug(f'{transform}')
+        try:
+            transform = {k: float(v) for k, v in transform.items()}
+        except TypeError as e:
+            _logger.exception('A key in the transform was not a float.')
+            raise e
+
         return transform
 
     def add_to_case(self, icase=None, structure_set=None,
@@ -390,8 +483,8 @@ class CouchTop(object):
 
         case_data = get_case_comment_data(icase)
 
-        if 'board_z' in case_data:
-            CouchTop._board_z = case_data['board_z']
+        if 'board_offset' in case_data:
+            CouchTop._board_offset = case_data['board_offset']
 
         with CompositeAction("Add couch '{}' to plan.".format(self.Name)):
             csft = icase.PatientModel.CreateStructuresFromTemplate
@@ -413,8 +506,8 @@ class CouchTop(object):
                            icase=icase,
                            simple_search=simple_search)
 
-        if 'board_z' not in case_data and CouchTop._board_z:
-            case_data['board_z'] = CouchTop._board_z
+        if 'board_offset' not in case_data and CouchTop._board_offset:
+            case_data['board_offset'] = CouchTop._board_offset
             set_case_comment_data(data=case_data,
                                   icase=icase,
                                   replace=True)
@@ -426,7 +519,8 @@ class CouchTop(object):
                                if roi_name in rois}
 
     @classmethod
-    def get_board_z_from_image(cls, img_stack, couch_y, simple_search=True):
+    def get_board_offset_from_image(cls, img_stack, couch_y,
+                                    simple_search=True):
         """
         Searches for coordinate of top of board.
         Simple search looks only for the central hole.
@@ -434,10 +528,11 @@ class CouchTop(object):
           based on the positions of the 4 side holes.  This method is preferred
           as CT scans often cut off the top of the board.
         """
-        if cls._board_z and str(img_stack) in cls._board_z:
-            return cls._board_z[str(img_stack)]
+        if cls._board_offset and str(img_stack) in cls._board_offset:
+            return cls._board_offset[str(img_stack)]
 
         z = img_stack.Corner.z + max(img_stack.SlicePositions)
+        x_offset = 0.
 
         search_y = couch_y + HN_SEARCH_DELTA
         if simple_search:
@@ -463,17 +558,7 @@ class CouchTop(object):
                 # of the H&N Board in the X direction.  We will then move the
                 # search points based on any shift in this image.
 
-                init_guess = point(x=HN_H2_X, y=search_y)
-                guess_edges = find_edges(img_stack, search_start=init_guess,
-                                         line_direction='-z', z_avg=0.05)
-                guess_hole = holes_by_width(edges=guess_edges,
-                                            width=HN_H_DIAM,
-                                            tolerance=1.)[-1]
-
-                width_search = point(y=search_y, z=guess_hole.center.z)
-                width_edges = find_edges(img_stack, search_start=width_search,
-                                         line_direction='x')
-                x_offset = (width_edges[-1][1].x + width_edges[0][0].x)/2
+                x_offset = guess_board_x_center(img_stack, couch_y)
 
                 tp_search_start = point(x=HN_H2_X + x_offset, y=search_y)
                 tn_search_start = point(x=-HN_H2_X + x_offset, y=search_y)
@@ -561,14 +646,15 @@ class CouchTop(object):
             except IndexError:
                 pass
 
+        offset = point(x_offset, 0, z)
         # MAGIC: Store the search result in the class so we don't have to do it
         # again.
-        if not cls._board_z:
-            cls._board_z = {str(img_stack): z}
+        if not cls._board_offset:
+            cls._board_offset = {str(img_stack): offset}
         else:
-            cls._board_z[str(img_stack)] = z
+            cls._board_offset[str(img_stack)] = offset
 
-        return z
+        return offset
 
     def move_rois(self, structure_set, couch_y=CT_Couch_TopY,
                   match_z=True, forced_z=None, icase=None, simple_search=True):
@@ -578,27 +664,33 @@ class CouchTop(object):
         roi_max_z = max([pt.z for roi in self.ROI_Names
                          for pt in self.roi_geometries[roi].GetBoundingBox()])
 
-        z_top_corner = (img_stack.Corner.z + max(img_stack.SlicePositions))
+        z_top_corner = point.Z() * (img_stack.Corner.z
+                                  + max(img_stack.SlicePositions))
+
         if match_z and not forced_z:
-            if self.isHN:
-                board_z = self.get_board_z_from_image(img_stack, couch_y,
-                                                      simple_search)
-                if board_z:
-                    z_top_corner = board_z
+            ct_z = guess_couchtop_z(img_stack)
+
+            if ct_z and simple_search:
+                z_top_corner.z = ct_z
+                if self.isHN:
+                    z_top_corner.x = guess_board_x_center(img_stack, couch_y)
+            elif self.isHN:
+                board = self.get_board_offset_from_image(img_stack, couch_y,
+                                                         simple_search)
+                if board:
+                    z_top_corner = board
             else:
-                ct_z = guess_couchtop_z(img_stack)
-                if ct_z is not None:
-                    z_top_corner = ct_z
-                else:
-                    if icase is None:
-                        icase = get_current("Case")
+                if icase is None:
+                    icase = get_current("Case")
 
-                    if icase.BodySite in SITE_SHIFT:
-                        z_top_corner += SITE_SHIFT[icase.BodySite]
+                if icase.BodySite in SITE_SHIFT:
+                    z_top_corner.z += SITE_SHIFT[icase.BodySite]
 
-        z = forced_z if forced_z else z_top_corner - roi_max_z
+        z = forced_z if forced_z else z_top_corner - point.Z() * roi_max_z
 
-        transform = self.get_transform(structure_set, couch_y, z)
+        offset = point.Y() * couch_y + z
+
+        transform = self.get_transform(structure_set, offset)
 
         for roi in self.ROI_Names:
             structure_set.RoiGeometries[roi].OfRoi.TransformROI3D(
@@ -612,11 +704,8 @@ class CouchTop(object):
                     geom.OfRoi.DeleteRoi()
 
     def machine_matches(self, inmachinename):
-        if isinstance(inmachinename, CouchTop):
-            inmachines = inmachinename._tx_machines_set
-        elif isinstance(inmachinename, str):
-            inmachines = self.machine_set(inmachinename)
-        else:
+        inmachines = self.machine_set(inmachinename)
+        if not inmachines:
             return False
 
         # First check if there is an exact name matching between the two sets.
@@ -653,10 +742,13 @@ class CouchTopCollection(object):
                          in patient_db.GetPatientModelTemplateInfo()}
 
         if tops:
+            _logger.debug(f"Building from incoming tops: {tops}")
             self.Tops = {k: CouchTop(k, **v) for k, v in tops.items()}
         elif use_known:
+            _logger.debug(f"Building from known tops: {KNOWN_TOPS}")
             self.Tops = {k: CouchTop(k, **v) for k, v in KNOWN_TOPS.items()}
         else:
+            _logger.debug(f"Building from DB Tops: {self._DB_Tops}")
             self.Tops = {k: CouchTop(k) for k in self._DB_Tops}
 
         self.update()
@@ -707,8 +799,7 @@ class CouchTopCollection(object):
                 not inTop.machine_matches(top)}
 
     def get_tops_in_structure_set(self, structure_set):
-        plan_roi_names = {roi.OfRoi.Name for roi
-                          in structure_set.RoiGeometries}
+        plan_roi_names = set(structure_set.RoiGeometries.Keys)
         models_present = []
         for top_name in self:
             self[top_name].update(structure_set)
@@ -753,10 +844,12 @@ def addcouchtoexam(icase, examination, plan=None, simple_search=False,
     existing_tops = tops.get_tops_in_structure_set(structure_set)
 
     # Remove all existing tops.
-    with CompositeAction("Remove Existing Tops"):
-        invalidate_structureset_doses(icase=icase, structure_set=structure_set)
-        while existing_tops:
-            existing_tops.pop().remove_from_case()
+    if existing_tops:
+        with CompositeAction("Remove Existing Tops"):
+            invalidate_structureset_doses(icase=icase,
+                                          structure_set=structure_set)
+            while existing_tops:
+                existing_tops.pop().remove_from_case()
 
     top_height = get_or_find_table_height(img_stack, icase=icase)
     isHN = test_for_hn(icase, img_stack)
