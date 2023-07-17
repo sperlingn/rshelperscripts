@@ -1,8 +1,14 @@
 import logging as _logging
-
-from System.Windows import MessageBox as _MessageBox
-
 _logger = _logging.getLogger(__name__)
+
+
+try:
+    from System.Windows import MessageBox as _MessageBox
+except ImportError:
+    class _MessageBox:
+        def Show(*args, **kwargs):
+            _logger.info("MessageBox: args={}, kwargs={}", args, kwargs)
+            return True
 
 
 class _CompositeActionDummy():
