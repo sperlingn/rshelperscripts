@@ -220,6 +220,57 @@ class Hole(object):
         return self.center.z
 
 
+class BoundingBox(list):
+    _min = None     # point() minimum
+    _max = None     # point() maximum
+
+    # TODO: Continue work on list inheritence
+    def __init__(self, bounding_box=None):
+        if bounding_box:
+            if len(bounding_box) == 3:
+                try:
+                    self._min = point(bounding_box)
+                    self._max = self._min
+                    return
+                except (ValueError, TypeError):
+                    pass
+
+            if (len(bounding_box) >= 2
+                    and len(bounding_box[0]) == len(point._COORDS)):
+                # Might be a list of points.
+                self._min, self._max = self.__minmax_pt_list__(bounding_box)
+
+    @property
+    def _pts(self):
+        return [pt for pt in (self._min, self._max) if pt]
+
+    @staticmethod
+    def __minmax_pt_list__(self, point_list):
+        ptszip = zip(*map(lambda p: map(lambda c: getattr(p, c),
+                                        point._COORDS, point_list)))
+        min_p = point(*map(min, ptszip))
+        max_p = point(*map(max, ptszip))
+        return min_p, max_p
+
+    def __add__(self, other):
+        if hasattr(other, '_pts'):
+            return type(self)([*self._pts, *other._pts])
+        elif point.__ispointlike__(other):
+            return type(self)([*self._pts, point(other)])
+        else:
+            return type(self)([*self._pts])
+
+    def __iadd__(self, other):
+        new = self+other
+        self._min = new._min
+        self._max = new._max
+        return self
+
+    @staticmethod
+    def __len__():
+        return 2
+
+
 def find_fwhm_edges(inarray, threshold='global_half_max', min_value=None):
     min_value = min_value if min_value is not None else min(inarray)
     last_max = min_value
