@@ -37,7 +37,12 @@ class point(dict):
         try:
             if isinstance(obj, cls):
                 return True
-            if any((hasattr(obj, c) or (c in obj)) for c in cls._COORDS):
+            if (all(((hasattr(obj, c) and float(getattr(obj, c)) is not None)
+                     for c in cls._COORDS))
+                or all(((c in obj and float(obj[c]) is not None)
+                        for c in cls._COORDS))
+                or (len(obj) == len(cls._COORDS)
+                    and all(float(v) is not None for v in obj))):
                 return True
         except TypeError:
             pass
@@ -169,6 +174,13 @@ class point(dict):
     def __itruediv__(self, other):
         return self.__idiv__(other)
 
+    def __lt__(self, other):
+        if self.__ispointlike__(other):
+            other_p = point(other)
+            return all((self[c] < other_p[c] for c in self))
+        else:
+            raise NotImplemented
+
     def copy(self):
         return self+0.
 
@@ -199,7 +211,7 @@ class Hole(object):
         self.diameter = float(diameter)
 
     def __lt__(self, other):
-        return self.diameter.__lt__(other.diameter)
+        return self.diameter<other.diameter
 
     def __repr__(self):
         return f"Hole({self.center}, {self.diameter})"
@@ -220,55 +232,104 @@ class Hole(object):
         return self.center.z
 
 
+class OverridenAttribute:
+    def __set_name__(self, owner, attrname):
+        self._attrname = attrname
+
+    def __get__(self, obj, objtype=None):
+        raise AttributeError(f'{objtype.__name__!r}.{self._attrname!r}'
+                             ' is overriden (removed).')
+
+
 class BoundingBox(list):
-    _min = None     # point() minimum
-    _max = None     # point() maximum
+    __delitem__ = OverridenAttribute()
+    __imul__ = OverridenAttribute()
+    pop = OverridenAttribute()
+    remove = OverridenAttribute()
+    clear = OverridenAttribute()
+    # __contains__ = OverridenAttribute()  # Might be okay to leave this...
 
     # TODO: Continue work on list inheritence
     def __init__(self, bounding_box=None):
+        _min = None     # point() minimum
+        _max = None     # point() maximum
         if bounding_box:
-            if len(bounding_box) == 3:
+            if point.__ispointlike__(bounding_box):
                 try:
-                    self._min = point(bounding_box)
-                    self._max = self._min
-                    return
+                    _min = point(bounding_box)
+                    _max = _min
                 except (ValueError, TypeError):
                     pass
-
-            if (len(bounding_box) >= 2
-                    and len(bounding_box[0]) == len(point._COORDS)):
+            elif self.__ispointlistlike__(bounding_box):
                 # Might be a list of points.
-                self._min, self._max = self.__minmax_pt_list__(bounding_box)
+                _min, _max = self.__minmax_pt_list__(bounding_box)
+
+        super().__init__((_min, _max))
 
     @property
-    def _pts(self):
-        return [pt for pt in (self._min, self._max) if pt]
+    def _min(self):
+        return self[0]
+
+    @_min.setter
+    def _min(self, value):
+        self[0] = point(value)
+
+    @property
+    def _max(self):
+        return self[1]
+
+    @_max.setter
+    def _max(self, value):
+        self[1] = point(value)
 
     @staticmethod
-    def __minmax_pt_list__(self, point_list):
-        ptszip = zip(*map(lambda p: map(lambda c: getattr(p, c),
-                                        point._COORDS, point_list)))
-        min_p = point(*map(min, ptszip))
-        max_p = point(*map(max, ptszip))
+    def sort(*args, **kwargs):
+        pass
+
+    @classmethod
+    def __ispointlistlike__(cls, obj):
+        if isinstance(obj, cls):
+            return True
+        try:
+            return all((point.__ispointlike__(p) for p in obj))
+        except (TypeError, ValueError, IndexError):
+            return False
+
+    @classmethod
+    def __minmax_pt_list__(cls, *args):
+        point_list = []
+        for i, pt_or_list in enumerate(args):
+            if cls.__ispointlistlike__(pt_or_list):
+                point_list += pt_or_list
+            elif point.__ispointlike__(pt_or_list):
+                point_list += [point(pt_or_list)]
+            else:
+                raise TypeError(f"Argument {i} was not a point or"
+                                f" a list of points ({pt_or_list})")
+
+        if not point_list:
+            raise ValueError("No valid points passed")
+
+        ptszip = (zip(*map(lambda p: point(p).values(), point_list)))
+        min_p, max_p = map(point,zip(*map(lambda p: (min(p), max(p)),
+                                          zip(*map(lambda p: point(p).values(),
+                                                   point_list)))))
         return min_p, max_p
 
     def __add__(self, other):
-        if hasattr(other, '_pts'):
-            return type(self)([*self._pts, *other._pts])
-        elif point.__ispointlike__(other):
-            return type(self)([*self._pts, point(other)])
-        else:
-            return type(self)([*self._pts])
+        return type(self)([*self.__minmax_pt_list__(self, other)])
 
     def __iadd__(self, other):
-        new = self+other
-        self._min = new._min
-        self._max = new._max
+        self._min, self._max = self.__minmax_pt_list__(self, other)
         return self
 
-    @staticmethod
-    def __len__():
-        return 2
+    def append(self, item):
+        self+=item
+
+
+    @property
+    def size(self):
+        return self._max - self._min
 
 
 def find_fwhm_edges(inarray, threshold='global_half_max', min_value=None):
