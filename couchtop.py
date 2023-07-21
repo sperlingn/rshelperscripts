@@ -173,11 +173,11 @@ def guess_couchtop_z(img_stack):
         abs_couch_pos = cdist + HEURISTIC_OFFSET
         ippscale = ipp / sliceloc
 
-        couch_z = ( abs_couch_pos * ippscale ) / 10.
+        couch_z = (abs_couch_pos * ippscale) / 10.
         _logger.debug('{}'.format(locals()))
 
         return couch_z
-    except Exception as e:
+    except Exception:
         _logger.exception("Problem reading CT data")
         return None
 
@@ -190,10 +190,10 @@ def guess_board_x_center(img_stack, couch_y):
     # finding the width.
     # Need to account for top hole not being on image
     guess_edges = find_edges(img_stack, search_start=init_guess,
-                                line_direction='-z', z_avg=0.05)
+                             line_direction='-z', z_avg=0.05)
     guess_holes = holes_by_width(edges=guess_edges,
-                                width=HN_H_DIAM,
-                                tolerance=1.)
+                                 width=HN_H_DIAM,
+                                 tolerance=1.)
     if guess_holes:
         init_guess.z = guess_holes[-1].center.z
     else:
@@ -201,7 +201,7 @@ def guess_board_x_center(img_stack, couch_y):
                         + (max(img_stack.SlicePositions)/2))
 
     width_edges = find_edges(img_stack, search_start=init_guess,
-                                line_direction='x')
+                             line_direction='x')
 
     if width_edges:
         x_offset = (width_edges[-1][1].x + width_edges[0][0].x)/2
@@ -321,7 +321,7 @@ class CouchTop(object):
     Name = ""
 
     ROI_Names = None
-    default_offset = (0,0,0)
+    default_offset = (0, 0, 0)
     tx_machines = None
     _tx_machines_set = None
     _board_offset = None
@@ -433,7 +433,7 @@ class CouchTop(object):
 
     @property
     def isHN(self):
-        return "HN" in "".join(self.ROI_Names).replace("&","")
+        return "HN" in "".join(self.ROI_Names).replace("&", "")
 
     @property
     def Top_offset(self):
@@ -665,7 +665,7 @@ class CouchTop(object):
                          for pt in self.roi_geometries[roi].GetBoundingBox()])
 
         z_top_corner = point.Z() * (img_stack.Corner.z
-                                  + max(img_stack.SlicePositions))
+                                    + max(img_stack.SlicePositions))
 
         if match_z and not forced_z:
             ct_z = guess_couchtop_z(img_stack)
@@ -858,7 +858,8 @@ def addcouchtoexam(icase, examination, plan=None, simple_search=False,
         if plan is None:
             _logger.warning("No plan selected, trying first plan.")
             plan = icase.TreatmentPlans[0]
-            machine = plan.BeamSets[0].MachineReference.MachineName
+        machine = plan.BeamSets[0].MachineReference.MachineName
+        _logger.debug(f"Found machine {machine = }")
     except (ArgumentOutOfRangeException, IndexError):
         _logger.info("Couldn't determine machine. "
                      "Guessing based on the current case.")
