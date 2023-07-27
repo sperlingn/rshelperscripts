@@ -6,6 +6,38 @@ import logging
 from .external import CompositeAction
 
 _logger = logging.getLogger(__name__)
+VALIDATION_TEMPLATE = "Validated {type}"
+
+
+def build_validation_comment(plan, beam_set, validation_type):
+    template = VALIDATION_TEMPLATE.format(type=validation_type)
+    lines = [line for line in plan.Comments.split('\n')
+             if template not in line and line]
+    validation_lines = [line for line in plan.Comments.split('\n') if
+                        template in line]
+
+    # Check for existance of a Validated line.
+    uids = set()
+    plan_uids = {bs.ModificationInfo.DicomUID for bs in plan.BeamSets
+                 if bs.ModificationInfo}
+
+    # Get current list of UIDs from validation_line
+    # Current format for validation: "Validated <Type>: <UID>[, <UID2>...]"
+    validated_uids = {line.strip() for vline in validation_lines for line in
+                      vline.split(': ')[1].split(',')}
+
+    # Only append those lines that are valid in the current plan
+    # This should catch when plans change and have already been validated
+    uids |= validated_uids & plan_uids
+
+    uids.add(beam_set.ModificationInfo.DicomUID if beam_set.ModificationInfo
+             else f'Unsaved Beamset {beam_set.Name}')
+
+    UID_s = ', '.join(uids)
+
+    lines += [f"{template}: {UID_s}"]
+
+    return '\n'.join(lines)
 
 
 def dumps_64(obj):
