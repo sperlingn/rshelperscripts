@@ -6,11 +6,13 @@ import logging
 from .external import CompositeAction
 
 _logger = logging.getLogger(__name__)
-VALIDATION_TEMPLATE = "Validated {type}"
+VALIDATION_TEMPLATE = "Validated {v_type}"
 
 
-def build_validation_comment(plan, beam_set, validation_type):
-    template = VALIDATION_TEMPLATE.format(type=validation_type)
+def set_validation_comment(plan, beam_set, validation_type, status=True):
+    # TODO: Build up better using RegExp and condense multiple Validation Types
+    # into a single line.
+    template = VALIDATION_TEMPLATE.format(v_type=validation_type)
     lines = [line for line in plan.Comments.split('\n')
              if template not in line and line]
     validation_lines = [line for line in plan.Comments.split('\n') if
@@ -30,14 +32,24 @@ def build_validation_comment(plan, beam_set, validation_type):
     # This should catch when plans change and have already been validated
     uids |= validated_uids & plan_uids
 
-    uids.add(beam_set.ModificationInfo.DicomUID if beam_set.ModificationInfo
-             else f'Unsaved Beamset {beam_set.Name}')
+    this_uid = (beam_set.ModificationInfo.DicomUID if beam_set.ModificationInfo
+                else f'{beam_set.Name}')
+
+    if status:
+        uids.add(this_uid)
+    else:
+        uids.discard(this_uid)
 
     UID_s = ', '.join(uids)
 
-    lines += [f"{template}: {UID_s}"]
+    if UID_s:
+        lines += [f"{template}: {UID_s}"]
 
-    return '\n'.join(lines)
+    _logger.debug(f"Set plan.Comments to {lines}")
+
+    with CompositeAction(f"Added validation for '{validation_type}' "
+                         "to plan comment."):
+        plan.Comments = '\n'.join(lines)
 
 
 def dumps_64(obj):
