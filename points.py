@@ -14,19 +14,23 @@ class point(dict):
         for coord in self._COORDS:
             self[coord] = 0
 
-        if isinstance(x, dict):
-            self.update(x)
-        elif isinstance(x, tuple) and len(x) == len(self._COORDS):
-            for coord, val in zip(self._COORDS, x):
-                self[coord] = val
-        elif all(hasattr(x, c) for c in self._COORDS):
-            # Assume this is a point like and build from this:
-            for coord in self._COORDS:
-                self[coord] = getattr(x, coord)
-        else:
+        try:
+            if isinstance(x, dict):
+                self.update(x)
+            elif all(hasattr(x, c) for c in self._COORDS):
+                # Assume this is a point like and build from this:
+                for coord in self._COORDS:
+                    self[coord] = getattr(x, coord)
+            elif len(x) == len(self._COORDS):
+                for coord, val in zip(self._COORDS, x):
+                    self[coord] = val
+            else:
+                raise TypeError
+        except TypeError:
             self.update({'x': x if x else 0,
-                         'y': y if y else 0,
-                         'z': z if z else 0})
+                        'y': y if y else 0,
+                        'z': z if z else 0})
+
 
     @classmethod
     def __contains__(cls, key):
@@ -300,7 +304,7 @@ class BoundingBox(list):
         point_list = []
         for i, pt_or_list in enumerate(args):
             if cls.__ispointlistlike__(pt_or_list):
-                point_list += pt_or_list
+                point_list += [point(pt) for pt in pt_or_list]
             elif point.__ispointlike__(pt_or_list):
                 point_list += [point(pt_or_list)]
             else:
@@ -326,6 +330,13 @@ class BoundingBox(list):
     def append(self, item):
         self+=item
 
+    @property
+    def lower(self):
+        return point(self[0])
+
+    @property
+    def upper(self):
+        return point(self[1])
 
     @property
     def size(self):
