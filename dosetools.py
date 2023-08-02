@@ -64,49 +64,55 @@ def invalidate_structureset_doses(icase, structure_set):
                                       NumberOfVoxels=nrvox)
 
 
-def expand_dosegrids(icase, structure_set, expand_superior=False):
+def expand_bs_dosegrid(beam_set, roi_bb=None, expand_superior=False):
+    if roi_bb is None:
+        roi_bb = get_roi_boundingbox(beam_set.GetStructureSet())
+
+    grid = beam_set.GetDoseGrid()
+
+    corner = point(grid.Corner)
+    vs = point(grid.VoxelSize)
+    nrvox = point(grid.NrVoxels)
+
+    grid_bb = BoundingBox([corner, corner+(vs*nrvox)])
+
+    full_bb = grid_bb + roi_bb
+
+    # Don't expand the dose grid in the Z inferiorly, and only
+    # superiorly if asked.
+    full_bb.limitz(grid_bb, expand_superior)
+
+    beam_set.UpdateDoseGrid(**full_bb.dosegrid_params(vs))
+
+
+def get_roi_boundingbox(structure_set, roi_types=_DOSE_CALC_ROI_TYPES):
+    roi_bb = BoundingBox()
+
+    # Define new bounds of the dose grid for this structure set based on any
+    # ROIs with types defined by dose_types (e.g. bolus, support, external).
+    for roi_g in structure_set.RoiGeometries:
+        if roi_g.OfRoi.Type in roi_types:
+            roi_bb += roi_g.GetBoundingBox()
+    return roi_bb
+
+
+def expand_case_dosegrids(icase, structure_set=None, expand_superior=False):
     """
     Expand dosegrids to include the full extent of any support structures in
     the L/R and A/P directions.  If expand_superior is set, also expand
     superiorly (for e.g. Brain Tx through the top of a H&N board)
     Default is false.
     """
+    if not structure_set:
+        structure_set = icase.PatientModel.StructureSets[0]
+
     exam_name = structure_set.OnExamination.Name
 
-    roi_bb = BoundingBox()
-
-    # Define new bounds of the dose grid for this structure set based on any
-    # ROIs with types defined by dose_types (e.g. bolus, support, external).
-    for roi_g in structure_set.RoiGeometries:
-        if roi_g.OfRoi.Type in _DOSE_CALC_ROI_TYPES:
-            roi_bb += roi_g.GetBoundingBox()
+    roi_bb = get_roi_boundingbox(structure_set)
 
     with _CompositeAction(f'Reshape all dose grids on "{exam_name}"'):
         for txplan in icase.TreatmentPlans:
             for bs in txplan.BeamSets:
                 bs_exam_name = bs.GetStructureSet().OnExamination.Name
-                if bs_exam_name != exam_name:
-                    continue
-
-                grid = bs.GetDoseGrid()
-
-                corner = point(grid.Corner)
-                vs = point(grid.VoxelSize)
-                nrvox = point(grid.NrVoxels)
-
-                grid_bb = BoundingBox([corner, corner+(vs*nrvox)])
-
-                full_bb = grid_bb + roi_bb
-
-                # Don't expand the dose grid in the Z inferiorly, any only
-                # superiorly if asked.
-                full_bb[0].z = grid_bb[0].z
-                if not expand_superior:
-                    full_bb[1].z = grid_bb[1].z
-
-                new_corner = full_bb.lower
-                new_nrvox = full_bb.size / vs
-
-                bs.UpdateDoseGrid(Corner=new_corner,
-                                  VoxelSize=vs,
-                                  NumberOfVoxels=new_nrvox)
+                if bs_exam_name == exam_name:
+                    expand_bs_dosegrid(bs, roi_bb, expand_superior)

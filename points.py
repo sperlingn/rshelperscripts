@@ -21,6 +21,11 @@ class point(dict):
                 # Assume this is a point like and build from this:
                 for coord in self._COORDS:
                     self[coord] = getattr(x, coord)
+            elif (x is not None and y is None and z is None
+                  and f'{x}'.replace('.','').lstrip('-').isdecimal()):
+                # Looks like x is a single number...
+                for coord in self._COORDS:
+                    self[coord] = float(f'{x}')
             elif len(x) == len(self._COORDS):
                 for coord, val in zip(self._COORDS, x):
                     self[coord] = val
@@ -254,19 +259,22 @@ class BoundingBox(list):
     # __contains__ = OverridenAttribute()  # Might be okay to leave this...
 
     # TODO: Continue work on list inheritence
-    def __init__(self, bounding_box=None):
+    def __init__(self, bbin=None):
         _min = None     # point() minimum
         _max = None     # point() maximum
-        if bounding_box:
-            if point.__ispointlike__(bounding_box):
-                try:
-                    _min = point(bounding_box)
-                    _max = _min
-                except (ValueError, TypeError):
-                    pass
-            elif self.__ispointlistlike__(bounding_box):
-                # Might be a list of points.
-                _min, _max = self.__minmax_pt_list__(bounding_box)
+        if bbin:
+            try:
+                bbin = self.__minmax_pt_list__(bbin.GetBoundingBox())
+            except (AttributeError, TypeError):
+                if point.__ispointlike__(bbin):
+                    try:
+                        _min = point(bbin)
+                        _max = _min
+                    except (ValueError, TypeError):
+                        pass
+                elif self.__ispointlistlike__(bbin):
+                    # Might be a list of points.
+                    _min, _max = self.__minmax_pt_list__(bbin)
 
         super().__init__((_min, _max))
 
@@ -341,6 +349,45 @@ class BoundingBox(list):
     @property
     def size(self):
         return self._max - self._min
+
+    @property
+    def center(self):
+        return (self._max + self._min) / 2
+
+    def limit(self, other, dim):
+        other_bb = BoundingBox(other)
+        dim_dir = 0
+        if dim[0] in '+-':
+            dim_dir = {'+': 1, '-': -1}[dim[0]]
+            dim = dim[1]
+        if dim_dir <= 0:
+            self._min[dim] = other._min[dim]
+        if dim_dir >= 0:
+            self._max[dim] = other._max[dim]
+
+    def limitz(self, other, infonly=False):
+        dim='-z' if infonly else 'z'
+        self.limit(other, dim)
+
+    def dosegrid_params(self, resolution=0.2, margin=0.2):
+        margin = point(margin)
+        resolution = point(resolution)
+        new_corner = self.lower - margin
+        new_nrvox = (self.size + 2*margin) / resolution
+        return {'Corner': new_corner,
+                'VoxelSize': resolution,
+                'NumberOfVoxels': new_nrvox}
+
+    def box_geometry_params(self, margin=0.2):
+        margin = point(margin)
+
+        size = self.size + 2*margin
+        center = self.center - margin
+
+        return {'Size': size,
+                'Center': center,
+                'Representation': "TriangleMesh",
+                'VoxelSize': None}
 
 
 def find_fwhm_edges(inarray, threshold='global_half_max', min_value=None):

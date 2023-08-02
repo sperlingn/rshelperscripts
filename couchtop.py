@@ -15,13 +15,16 @@ except ImportError:
             _logger.info("MessageBox: args={}, kwargs={}", args, kwargs)
             return True
 
-from .points import holes_by_width, point, find_first_edge, find_edges
+from .points import (holes_by_width, point, find_first_edge, find_edges,
+                     BoundingBox)
 from .rsdicomread import read_dataset
 from .case_comment_data import (get_case_comment_data, set_case_comment_data,
                                 get_data)
 from .dosetools import invalidate_structureset_doses
 
 from .external import get_current, CompositeAction
+
+from .roi import ROI_Builder, ROI
 
 import logging
 
@@ -327,7 +330,6 @@ class CouchTop(object):
     _board_offset = None
 
     roi_geometries = None
-    isHN = False
     template = None
     isValid = False
     _desc_re = re_compile(r'(?:Offset:\s(?P<Offset>\d+)'
@@ -470,15 +472,28 @@ class CouchTop(object):
 
         return transform
 
-    def add_to_case(self, icase=None, structure_set=None,
+    @property
+    def create_opts(self):
+        source_exam_name = self.template.StructureSetExaminations[0].Name
+        return {'SourceTemplate': self.template,
+                'SourceExaminationName': source_exam_name,
+                'SourceRoiNames': list(self.ROI_Names),
+                #  Rest are default options
+                'SourcePoiNames': [],
+                'AssociateStructuresByName': True,
+                'TargetExamination': None,
+                'InitializationOption': "AlignImageCenters"}
+
+    def add_to_case(self, icase=None, examination=None,
                     couch_y=CT_Couch_TopY, match_z=True, forced_z=None,
                     simple_search=True):
         if icase is None:
             icase = get_current("Case")
-        if structure_set is None:
-            structure_set = icase.PatientModel.StructureSets[0]
+        if examination is None:
+            examination = icase.PatientModel.Examinations[0]
 
-        examination = structure_set.OnExamination
+        structure_set = icase.PatientModel.StructureSets[examination.Name]
+
         source_exam_name = self.template.StructureSetExaminations[0].Name
 
         case_data = get_case_comment_data(icase)
@@ -487,15 +502,9 @@ class CouchTop(object):
             CouchTop._board_offset = case_data['board_offset']
 
         with CompositeAction("Add couch '{}' to plan.".format(self.Name)):
-            csft = icase.PatientModel.CreateStructuresFromTemplate
-            csft(SourceTemplate=self.template,
-                 SourceExaminationName=source_exam_name,
-                 SourceRoiNames=list(self.ROI_Names),
-                 #  Rest are default options
-                 SourcePoiNames=[],
-                 AssociateStructuresByName=True,
-                 TargetExamination=examination,
-                 InitializationOption="AlignImageCenters")
+            create_opts = self.create_opts
+            create_opts['TargetExamination'] = examination
+            icase.PatientModel.CreateStructuresFromTemplate(**create_opts)
 
             self.update(structure_set)
 
@@ -506,14 +515,35 @@ class CouchTop(object):
                            icase=icase,
                            simple_search=simple_search)
 
+            # self.trim_rois(icase, structure_set)
+
         if 'board_offset' not in case_data and CouchTop._board_offset:
             case_data['board_offset'] = CouchTop._board_offset
             set_case_comment_data(data=case_data,
                                   icase=icase,
                                   replace=True)
 
+    def trim_rois(self, icase, structure_set):
+        patient_bb = BoundingBox(structure_set.OutlineRoiGeometry)
+        couch_bb = BoundingBox(self.roi_geometries[self.surface_roi])
+        box_bb = couch_bb + patient_bb
+
+        box_bb.limitz(patient_bb, self.isHN)
+
+        roi_builder = ROI_Builder(icase.PatientModel, structure_set)
+        box = ROI_Builder.CreateROI('box')
+        for roi in self._rois:
+            roi.ab_intersect(rois_a=roi.Name, rois_b=box.Name)
+
+        for roi_name, roi_g in self.roi_geometries.items():
+            if roi_name == self.surface_roi:
+                continue
+            roi_g.GetBoundingBox()
+
     def update(self, structure_set):
-        rois = {roi.OfRoi.Name for roi in structure_set.RoiGeometries}
+        structset_rois = structure_set.RoiGeometries.Keys
+        self._rois = {roi_name: ROI(roi, structure_set) for roi_name in rois
+                      if roi_name in self.ROI_Names}
         self.roi_geometries = {roi_name: structure_set.RoiGeometries[roi_name]
                                for roi_name in self.ROI_Names
                                if roi_name in rois}
@@ -833,8 +863,11 @@ class CouchTopCollection(object):
         return str(self)
 
 
-def addcouchtoexam(icase, examination, plan=None, simple_search=False,
+def addcouchtoexam(icase, examination=None, plan=None, simple_search=False,
                    patient_db=get_current("PatientDB")):
+
+    if not examination:
+        examination = icase.PatientModel.Examinations[0]
 
     structure_set = icase.PatientModel.StructureSets[examination.Name]
     img_stack = examination.Series[0].ImageStack
@@ -870,5 +903,7 @@ def addcouchtoexam(icase, examination, plan=None, simple_search=False,
     top = tops.get_first_top(machine=machine, isHN=isHN)
 
     with CompositeAction(f"Add {top.Name} to case"):
-        top.add_to_case(icase, structure_set, top_height,
+        top.add_to_case(icase, examination, top_height,
                         simple_search=simple_search)
+
+    return top

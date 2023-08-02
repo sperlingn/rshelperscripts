@@ -33,7 +33,7 @@ def set_validation_comment(plan, beam_set, validation_type, status=True):
     uids |= validated_uids & plan_uids
 
     this_uid = (beam_set.ModificationInfo.DicomUID if beam_set.ModificationInfo
-                else f'{beam_set.Name}')
+                else f'{beam_set.DicomPlanLabel}')
 
     if status:
         uids.add(this_uid)
