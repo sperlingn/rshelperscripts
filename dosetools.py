@@ -86,13 +86,10 @@ def expand_bs_dosegrid(beam_set, roi_bb=None, expand_superior=False):
 
 
 def get_roi_boundingbox(structure_set, roi_types=_DOSE_CALC_ROI_TYPES):
-    roi_bb = BoundingBox()
-
     # Define new bounds of the dose grid for this structure set based on any
     # ROIs with types defined by dose_types (e.g. bolus, support, external).
-    for roi_g in structure_set.RoiGeometries:
-        if roi_g.OfRoi.Type in roi_types:
-            roi_bb += roi_g.GetBoundingBox()
+    roi_bb = BoundingBox([roi_g for roi_g in structure_set.RoiGeometries
+                          if roi_g.OfRoi.Type in roi_types])
     return roi_bb
 
 
