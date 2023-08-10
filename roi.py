@@ -1,4 +1,5 @@
 from .external import get_current
+from .points import point
 import logging
 _logger = logging.getLogger(__name__)
 
@@ -32,6 +33,9 @@ class ROI_Builder():
 
         if patient_model:
             self.pm = patient_model
+
+        if not self.pm:
+            self.pm = get_current("Case").PatientModel
 
         if structure_set:
             self.structsets = [structure_set]
@@ -91,13 +95,48 @@ class ROI():
                 return
 
         if context and hasattr(context, 'RoiGeometries'):
-            geom = context.RoiGeometries[roi.Name]
+            geom = context.RoiGeometries[self.Name]
             self._geometries[context.OnExamination] = geom
         elif context:
             try:
                 self._geometries.update(context)
             except TypeError:
                 self._geometries[get_current('Examination')] = context
+        else:
+            self._geometries[get_current('Examination')] = None
+
+    def create_box(self, size=1, center=0, exam=None, **kwargs):
+        params = {'Size': point(size),
+                  'Center': point(center),
+                  'Examination': None,
+                  'Representation': 'TriangleMesh',
+                  'VoxelSize': None}
+
+        for key in params:
+            if key in kwargs:
+                params[key] = kwargs[key]
+
+        if exam and exam in [exam.Name for exam in self._geometries]:
+            exams = [lexam for lexam in self._geometries if lexam.Name == exam]
+        elif exam:
+            try:
+                lexams = list(iter(exam))
+            except TypeError:
+                lexams = [exam]
+
+            exams = []
+            for exam in lexams:
+                if hasattr(exam, 'Name') and hasattr(exam, 'EquipmentInfo'):
+                    exams += [exam]
+                elif isinstance(exam, str):
+                    exams += [lexam for lexam in self._geometries
+                              if lexam.Name == exam]
+        else:
+            exams = self._geometries.keys()
+
+        for exam in exams:
+            params['Examination'] = exam
+            self._roi.CreateBoxGeometry(**params)
 
     def marginate(self, source_roi, margin):
         margin_opts = {'Examination': None,
@@ -107,13 +146,29 @@ class ROI():
             margin_opts['Examination'] = exam
             self.CreateMarginGeometry(**margin_opts)
 
+    def ab_subtraction(self, exam=None, rois_a=None, rois_b=None):
+        self.ab_operation(exam, rois_a, rois_b, operation='Subtraction')
+
     def ab_intersect(self, exam=None, rois_a=None, rois_b=None):
+        self.ab_operation(exam, rois_a, rois_b, operation='Intersection')
+
+    def ab_operation(self, exam, rois_a, rois_b, operation):
+        VALID_OPS = ['None',
+                     'Union',
+                     'Intersection',
+                     'Subtraction']
+        if operation and operation not in VALID_OPS:
+            operation = None
         if not exam and len(self._geometries) == 1:
             exam = [k for k in self._geometries.keys()][0]
         if not isinstance(rois_a, list):
             rois_a = [rois_a]
         if not isinstance(rois_b, list):
             rois_b = [rois_b]
+
+        # Convert any passed ROI or RS ROI into a Name
+        rois_a = [roi.Name if hasattr(roi, 'Name') else roi for roi in rois_a]
+        rois_b = [roi.Name if hasattr(roi, 'Name') else roi for roi in rois_b]
 
         exp_a = {'Operation': 'Union',
                  'SourceRoiNames': rois_a,
@@ -127,7 +182,7 @@ class ROI():
                             'Algorithm': 'Auto',
                             'ExpressionA': exp_a,
                             'ExpressionB': exp_b,
-                            'ResultOperation': 'Intersection',
+                            'ResultOperation': operation,
                             'ResultMarginSettings': margin_settings(0)}
 
         self._roi.CreateAlgebraGeometry(**create_geom_opts)
