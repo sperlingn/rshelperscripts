@@ -731,30 +731,26 @@ class CouchTop(object):
 
         return offset
 
-    def move_rois(self, structure_set, couch_y=CT_Couch_TopY,
-                  match_z=True, forced_z=None, icase=None, simple_search=True):
+    def get_offset(self, structure_set, simple_search, couch_y, icase,
+                   forced_z=None):
+        if forced_z is None:
+            examination = structure_set.OnExamination
+            img_stack = examination.Series[0].ImageStack
 
-        # Invalidate to force recomputing of boundingbox
-        self._bounding_box = None
-        examination = structure_set.OnExamination
-        img_stack = examination.Series[0].ImageStack
+            couch_bb = self.boundingbox
 
-        roi_max_z = self.boundingbox.upper.z
-
-        z_top_edge = point.Z() * (img_stack.Corner.z
-                                  + max(img_stack.SlicePositions))
-
-        x_offset = point(0.)
-
-        if match_z and forced_z is None:
+            ct = CT_Image_Stack(img_stack)
             ct_z = guess_couchtop_z(img_stack)
 
+            # Default offset to move the top of the board to the top of the CT
+            offset = point.Z() * ct.maxz
+
             if ct_z and simple_search:
-                z_top_edge.z = ct_z
+                offset.z = ct_z
                 if self.isHN:
                     try:
                         _logger.debug(f"Had {ct_z=}, find x_offset")
-                        x_offset.x = guess_board_x_center(img_stack, couch_y)
+                        offset.x = guess_board_x_center(img_stack, couch_y)
                     except (TypeError, ValueError):
                         pass
             elif self.isHN:
@@ -762,42 +758,47 @@ class CouchTop(object):
                     board = self.get_board_offset_from_image(img_stack,
                                                              couch_y,
                                                              simple_search)
-                    z_top_edge.z = board.z
+                    offset.z = board.z
                 except (TypeError, ValueError, Warning):
                     # Couldn't find the board, so make sure we don't remove any
                     # of the couch by setting the bottom edge to be at the
                     # bottom of the CT.
                     _logger.warning("Couldn't find H&N board position."
                                     "  Board should be positioned manually.")
-                    ct = CT_Image_Stack(img_stack)
-                    couch_bottom_z = self.boundingbox.lower.z
-                    z_top_edge.z = roi_max_z + (ct.minz - couch_bottom_z)
-                    _logger.debug("new bottom edge:\n\t"
-                                  "z_top_edge.z = roi_max_z + (ct.minz - "
-                                  "couch_bottom_z\n\t"
-                                  f"{z_top_edge.z} = {roi_max_z} + ({ct.minz}"
-                                  f" - {couch_bottom_z}")
+                    offset.z = couch_bb.upper.z + (ct.minz - couch_bb.lower.z)
 
             else:
                 if icase is None:
                     icase = get_current("Case")
 
                 if icase.BodySite in SITE_SHIFT:
-                    z_top_edge.z += SITE_SHIFT[icase.BodySite]
+                    offset.z += SITE_SHIFT[icase.BodySite]
 
-            z_offset = z_top_edge - point.Z() * roi_max_z
-        elif forced_z is not None:
-            z_offset = point(forced_z)
+            offset -= point.Z() * couch_bb.upper.z
+        else:
+            offset = point(forced_z)
 
-        _logger.debug(f"offset = point.Y() * {couch_y}+{z_offset}+{x_offset}")
-        offset = point.Y() * couch_y + z_offset + x_offset
+        offset += point.Y() * couch_y
         _logger.debug(f"{offset=}")
+        return offset
+
+    def move_rois(self, structure_set, couch_y=CT_Couch_TopY,
+                  match_z=True, forced_z=None, icase=None, simple_search=True):
+
+        # Invalidate to force recomputing of boundingbox
+        self._bounding_box = None
+
+        offset = self.get_offset(structure_set, simple_search,
+                                 couch_y, icase, forced_z)
+
+        if not match_z:
+            offset.z = 0
 
         transform = self.get_transform(structure_set, offset)
 
         for roi in self.ROI_Names:
             structure_set.RoiGeometries[roi].OfRoi.TransformROI3D(
-                Examination=examination,
+                Examination=structure_set.OnExamination,
                 TransformationMatrix=transform)
 
         self._bounding_box = None
