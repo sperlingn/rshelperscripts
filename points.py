@@ -1,8 +1,16 @@
 import logging
 from math import sqrt, sin, cos, pi
 from typing import Sequence, List, Tuple
+from .external import rs_hasattr, rs_callable
 
 _logger = logging.getLogger(__name__)
+
+
+def floatable_attr(obj, attrname):
+    try:
+        return float(getattr(obj, attrname)) is not None
+    except (KeyError, TypeError, ValueError, AttributeError):
+        return False
 
 
 class point(dict):
@@ -17,12 +25,12 @@ class point(dict):
         try:
             if isinstance(x, dict):
                 self.update(x)
-            elif all(hasattr(x, c) for c in self._COORDS):
+            elif all(floatable_attr(x, c) for c in self._COORDS):
                 # Assume this is a point like and build from this:
                 for coord in self._COORDS:
                     self[coord] = getattr(x, coord)
             elif (x is not None and y is None and z is None
-                  and f'{x}'.replace('.','').lstrip('-').isdecimal()):
+                  and f'{x}'.replace('.', '').lstrip('-').isdecimal()):
                 # Looks like x is a single number...
                 for coord in self._COORDS:
                     self[coord] = float(f'{x}')
@@ -33,9 +41,8 @@ class point(dict):
                 raise TypeError
         except TypeError:
             self.update({'x': x if x else 0,
-                        'y': y if y else 0,
-                        'z': z if z else 0})
-
+                         'y': y if y else 0,
+                         'z': z if z else 0})
 
     @classmethod
     def __contains__(cls, key):
@@ -46,8 +53,7 @@ class point(dict):
         try:
             if isinstance(obj, cls):
                 return True
-            if (all(((hasattr(obj, c) and float(getattr(obj, c)) is not None)
-                     for c in cls._COORDS))
+            if (all(floatable_attr(obj, c) for c in cls._COORDS)
                 or all(((c in obj and float(obj[c]) is not None)
                         for c in cls._COORDS))
                 or (len(obj) == len(cls._COORDS)
@@ -92,6 +98,10 @@ class point(dict):
     @z.setter
     def z(self, value):
         self['z'] = value
+
+    @property
+    def to_tup(self):
+        return tuple(self[coord] for coord in self._COORDS)
 
     @property
     def magnitude(self):
@@ -188,7 +198,7 @@ class point(dict):
             other_p = point(other)
             return all((self[c] < other_p[c] for c in self))
         else:
-            raise NotImplemented
+            raise NotImplementedError
 
     def copy(self):
         return self+0.
@@ -205,7 +215,10 @@ class point(dict):
         return self
 
     def __str__(self):
-        return f"({self.x:.2f}, {self.y:.2f}, {self.z:.2f})"
+        try:
+            return f"({self.x:.2f}, {self.y:.2f}, {self.z:.2f})"
+        except TypeError:
+            return super().__str__()
 
     def __repr__(self):
         return "point({})".format(super(point, self).__repr__())
@@ -220,7 +233,7 @@ class Hole(object):
         self.diameter = float(diameter)
 
     def __lt__(self, other):
-        return self.diameter<other.diameter
+        return self.diameter < other.diameter
 
     def __repr__(self):
         return f"Hole({self.center}, {self.diameter})"
@@ -263,18 +276,17 @@ class BoundingBox(list):
         _min = None     # point() minimum
         _max = None     # point() maximum
         if bbin:
-            try:
-                bbin = self.__minmax_pt_list__(bbin.GetBoundingBox())
-            except (AttributeError, TypeError):
-                if point.__ispointlike__(bbin):
-                    try:
-                        _min = point(bbin)
-                        _max = _min
-                    except (ValueError, TypeError):
-                        pass
-                elif self.__ispointlistlike__(bbin):
-                    # Might be a list of points.
-                    _min, _max = self.__minmax_pt_list__(bbin)
+            if point.__ispointlike__(bbin):
+                try:
+                    _min = point(bbin)
+                    _max = _min
+                except (ValueError, TypeError):
+                    pass
+            elif self.__ispointlistlike__(bbin):
+                # Might be a list of points.
+                _min, _max = self.__minmax_pt_list__(bbin)
+            elif self.__ispointlistlistlike__(bbin):
+                _min, _max = self.__minmax_pt_list__(*bbin)
 
         super().__init__((_min, _max))
 
@@ -299,8 +311,15 @@ class BoundingBox(list):
         pass
 
     @classmethod
+    def __ispointlistlistlike__(cls, obj):
+        try:
+            return all((cls.__ispointlistlike__(i) for i in obj))
+        except (TypeError, ValueError, IndexError):
+            return False
+
+    @classmethod
     def __ispointlistlike__(cls, obj):
-        if isinstance(obj, cls):
+        if isinstance(obj, cls) or rs_callable(obj, 'GetBoundingBox'):
             return True
         try:
             return all((point.__ispointlike__(p) for p in obj))
@@ -311,8 +330,15 @@ class BoundingBox(list):
     def __minmax_pt_list__(cls, *args):
         point_list = []
         for i, pt_or_list in enumerate(args):
-            if cls.__ispointlistlike__(pt_or_list):
-                point_list += [point(pt) for pt in pt_or_list]
+            if cls.__ispointlistlistlike__(pt_or_list):
+                point_list += [cls.__minmax_pt_list__(*pt_or_list)]
+            elif cls.__ispointlistlike__(pt_or_list):
+                if rs_callable(pt_or_list, 'GetBoundingBox'):
+                    try:
+                        pt_or_list = pt_or_list.GetBoundingBox()
+                    except Exception:
+                        continue
+                point_list += [*map(point, pt_or_list)]
             elif point.__ispointlike__(pt_or_list):
                 point_list += [point(pt_or_list)]
             else:
@@ -322,10 +348,9 @@ class BoundingBox(list):
         if not point_list:
             raise ValueError("No valid points passed")
 
-        ptszip = (zip(*map(lambda p: point(p).values(), point_list)))
-        min_p, max_p = map(point,zip(*map(lambda p: (min(p), max(p)),
-                                          zip(*map(lambda p: point(p).values(),
-                                                   point_list)))))
+        min_p, max_p = map(point, zip(*map(lambda p: (min(p), max(p)),
+                                           zip(*map(lambda p: point(p).to_tup,
+                                                    point_list)))))
         return min_p, max_p
 
     def __add__(self, other):
@@ -336,7 +361,10 @@ class BoundingBox(list):
         return self
 
     def append(self, item):
-        self+=item
+        self += item
+
+    def copy(self):
+        return type(self)(self)
 
     @property
     def lower(self):
@@ -361,12 +389,12 @@ class BoundingBox(list):
             dim_dir = {'+': 1, '-': -1}[dim[0]]
             dim = dim[1]
         if dim_dir <= 0:
-            self._min[dim] = other._min[dim]
+            self._min[dim] = other_bb._min[dim]
         if dim_dir >= 0:
-            self._max[dim] = other._max[dim]
+            self._max[dim] = other_bb._max[dim]
 
     def limitz(self, other, infonly=False):
-        dim='-z' if infonly else 'z'
+        dim = '-z' if infonly else 'z'
         self.limit(other, dim)
 
     def dosegrid_params(self, resolution=0.2, margin=0.2):
@@ -388,6 +416,60 @@ class BoundingBox(list):
                 'Center': center,
                 'Representation': "TriangleMesh",
                 'VoxelSize': None}
+
+
+class CT_Image_Stack():
+    _size = None
+    _bounding_box = None
+    _npixels = None
+    _res = None
+
+    def __init__(self, img_stack):
+        self._img_stack = img_stack
+        if point(img_stack.SliceDirection) != point.Z():
+            raise NotImplementedError("Can only handle Z direction scans.")
+
+        z_res = img_stack.SlicePositions[1] - img_stack.SlicePositions[0]
+
+        self._res = point({'x': img_stack.PixelSize.x,
+                           'y': img_stack.PixelSize.y,
+                           'z': z_res})
+
+        self._npixels = point({'x': img_stack.NrPixels.x,
+                               'y': img_stack.NrPixels.y,
+                               'z': len(img_stack.SlicePositions)})
+
+        self._size = self._npixels / self._res
+
+        self._bounding_box = BoundingBox([point(img_stack.Corner),
+                                          img_stack.Corner + self._size])
+
+    @property
+    def size(self):
+        return self._size.copy()
+
+    @property
+    def n_pixels(self):
+        return self._npixels.copy()
+
+    def GetBoundingBox(self):
+        return self.boundingbox
+
+    @property
+    def boundingbox(self):
+        return self._bounding_box.copy()
+
+    @property
+    def res(self):
+        return self._res.copy()
+
+    @property
+    def maxz(self):
+        return self._bounding_box[1].z
+
+    @property
+    def minz(self):
+        return self._bounding_box[0].z
 
 
 def find_fwhm_edges(inarray, threshold='global_half_max', min_value=None):
@@ -460,12 +542,14 @@ def find_edges(img_stack, search_start=None, x_avg=None, y_avg=None,
 
     if x_avg:
         resolution.x = x_avg
-        if y_avg:
-            resolution.y = y_avg
-            if z_avg:
-                resolution.z = z_avg
 
-    size = n_pixels*img_res
+    if y_avg:
+        resolution.y = y_avg
+
+    if z_avg:
+        resolution.z = z_avg
+
+    size = n_pixels * img_res
     image_center = point(img_stack.Corner) + (size/2)
 
     voxelcount = (((size//resolution) - 1) * lvec) + 1
@@ -475,7 +559,7 @@ def find_edges(img_stack, search_start=None, x_avg=None, y_avg=None,
     search_pt = point({idx: (v if v is not None
                              else image_center[idx])
                        for idx, v in point(search_start).items()})
-    search_pt.to_from_rs()
+    # search_pt
 
     # If search_start was not set, this will start the search from the image
     # center in all directions except the search direction where it will start
@@ -484,17 +568,21 @@ def find_edges(img_stack, search_start=None, x_avg=None, y_avg=None,
     # for the search direction).
     corner = (point(img_stack.Corner) * lvec) + (search_pt * ~lvec)
 
-    corner.to_from_rs()
+    _logger.debug(f"\n\t{corner=}\n\t{img_stack.Corner=}\n\t{lvec=}")
+    # corner
 
-    _logger.debug(f"ires:\t{img_res}\n"
-                  f"np:\t{n_pixels}\n"
-                  f"size:\t{size}\n"
-                  f"res:\t{resolution}\n"
-                  f"vc:\t{voxelcount}")
+    _logger.debug("Searching:\n\t"
+                  f"ires:\t{img_res}\n\t"
+                  f"np:\t{n_pixels}\n\t"
+                  f"size:\t{size}\n\t"
+                  f"res:\t{resolution}\n\t"
+                  f"vc:\t{voxelcount}\n\t"
+                  f"corner:\t{corner}\n\t"
+                  f"search_pt:\t{search_pt}")
 
     voxelsizes = resolution
 
-    _logger.debug(f"{voxelcount} {voxelsizes} {corner}")
+    _logger.debug(f"{voxelcount=} {voxelsizes=} {corner=}")
 
     try:
         line_pos = [corner[ldir] + pt * resolution[ldir]
@@ -509,31 +597,36 @@ def find_edges(img_stack, search_start=None, x_avg=None, y_avg=None,
 
         edge_pairs = find_fwhm_edges(line, threshold)
 
-        _logger.debug(f"{edge_pairs = }")
-        _logger.debug(f"{line_pos = }")
-        _logger.debug(f"{lvec = }")
+        _logger.debug("Found line:\n\t"
+                      f"{edge_pairs = }\n\t"
+                      f"{lvec = }")
+        _logger.log(level=logging.DEBUG-1, msg="Additional...\n\t"
+                    f"{line_pos = }\n\t"
+                    f"{line = }")
 
         if not edge_pairs:
             # If we never found a good edge, the couch edge must be outside of
-            # the FOV.  Return None
-            return None
+            # the FOV.  Return Empty list
+            return []
 
         # Return a list of paired edges in raystation coordinates.
         edge_pairs_rs = [(((line_pos[pair[0]] * lvec)
-                           + (corner * ~lvec)).to_from_rs(),
+                           + (corner * ~lvec)),
                           ((line_pos[pair[1]] * lvec)
-                           + (corner * ~lvec)).to_from_rs())
+                           + (corner * ~lvec)))
                          for pair in edge_pairs]
         _logger.debug(f"{edge_pairs_rs = }")
+        _loc_ = locals()
+        _logger.log(level=logging.DEBUG-1, msg=f"\n{_loc_=}", stack_info=True)
         return edge_pairs_rs
 
         # Return a simlpe list of edges in raystation coordinates.
         return [((line_pos[x] * lvec)
-                 + (corner * ~lvec)).to_from_rs() for x in edge_pairs]
+                 + (corner * ~lvec)) for x in edge_pairs]
 
     except (TypeError, ValueError, IndexError, SystemError) as e:
         _logger.exception(e)
-        return None
+        return []
 
 
 def find_first_edge(img_stack, search_start=None,
@@ -542,6 +635,7 @@ def find_first_edge(img_stack, search_start=None,
     kwargs = {k: v for k, v in locals().items() if v is not None}
     del kwargs['img_stack']
     del kwargs['rising_edge']
+    _logger.debug(f"{kwargs=}")
     return find_edges(img_stack, **kwargs)[0][not rising_edge]
 
 
