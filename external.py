@@ -204,4 +204,19 @@ except ImportError:
     def dcmread(*args, **kwargs):
         return None
 
+
+def rs_hasattr(obj, attrname):
+    try:
+        return hasattr(obj, attrname)
+    except (KeyError, ValueError, IndexError, TypeError):
+        return False
+
+
+def rs_callable(obj, attrname):
+    try:
+        return callable(getattr(obj, attrname))
+    except (AttributeError, ValueError, KeyError, IndexError):
+        return False
+
+
 # __all__ = [dcmread, CompositeAction, get_current]
