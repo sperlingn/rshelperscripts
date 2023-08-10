@@ -16,7 +16,7 @@ except ImportError:
             return True
 
 from .points import (holes_by_width, point, find_first_edge, find_edges,
-                     BoundingBox)
+                     BoundingBox, CT_Image_Stack)
 from .rsdicomread import read_dataset
 from .case_comment_data import (get_case_comment_data, set_case_comment_data,
                                 get_data)
@@ -37,7 +37,7 @@ _logger = logging.getLogger(__name__)
 
 CT_Couch_TopY = 20.8
 CT_Top_NegativeX = -24.5
-HN_SEARCH_DELTA = -1.
+HN_SEARCH_DELTA = 1.
 
 HN_SITES = {"Brain",
             "Head & Neck"}
@@ -177,7 +177,15 @@ def guess_couchtop_z(img_stack):
         ippscale = ipp / sliceloc
 
         couch_z = (abs_couch_pos * ippscale) / 10.
-        _logger.debug('{}'.format(locals()))
+        _logger.debug('Locals:\n\t'
+                      f'{CZ_raw=}\n\t'
+                      f'{couchZabs=}\n\t'
+                      f'{sliceloc=}\n\t'
+                      f'{ipp=}\n\t'
+                      f'{cdist=}\n\t'
+                      f'{abs_couch_pos=}\n\t'
+                      f'{ippscale=}\n\t'
+                      f'{couch_z=}')
 
         return couch_z
     except Exception:
@@ -210,6 +218,7 @@ def guess_board_x_center(img_stack, couch_y):
         x_offset = (width_edges[-1][1].x + width_edges[0][0].x)/2
     else:
         x_offset = 0
+    _logger.debug(f"{x_offset=}")
     return x_offset
 
 
@@ -289,7 +298,8 @@ def find_table_height(img_stack, resolution=None, search_start=None,
                                threshold=threshold,
                                rising_edge=False)
 
-        return edge
+        _logger.debug(f"{edge=}")
+        return edge.y
 
     except TypeError:
         return default
@@ -326,6 +336,7 @@ class CouchTop(object):
     ROI_Names = None
     default_offset = (0, 0, 0)
     tx_machines = None
+    surface_roi = None
     _tx_machines_set = None
     _board_offset = None
 
@@ -338,7 +349,7 @@ class CouchTop(object):
 
     _updateable = ['surface_roi', 'tx_machines', 'default_offset']
 
-    _surfaceboundingbox = None
+    _bounding_box = None
 
     inActiveSet = False
 
@@ -385,7 +396,7 @@ class CouchTop(object):
 
         return updated
 
-    def _build_from_description(self):
+    def _build_from_description(self):  # noqa: C901
         if self.template.Description:
             # First see if there is data stored in base64
             data = get_data(self.template.Description)
@@ -440,22 +451,37 @@ class CouchTop(object):
     @property
     def Top_offset(self):
         try:
-            surf_bb = self._surfaceboundingbox
-            x_offset = point(x=(surf_bb[0].x + surf_bb[1].x) / 2.)
+            x_offset = self.boundingbox.center.x
             _logger.debug(f"{self.default_offset=}, {x_offset=}")
-            return point(self.default_offset) - x_offset
+            offset = point(self.default_offset)
+            offset.x -= x_offset
+            return offset
         except Exception as e:
             _logger.info(str(e), exc_info=True)
             return self.default_offset
 
+    @property
+    def boundingbox(self):
+        if self._bounding_box is None:
+            self._bounding_box = BoundingBox(self.roi_geometries.values())
+            _logger.debug(f"Rebuilding...\n\t{self._bounding_box}")
+            try:
+                _logger.debug('\n\t'.join('{}: {}'.format(g.OfRoi.Name,
+                                                          g.GetBoundingBox())
+                                          for g in
+                                          self.roi_geometries.values()))
+            except Exception:
+                pass
+        return self._bounding_box.copy()
+
     def get_transform(self, structure_set, offset):
-
         # get from position of top, need ROIs to be present.
-        surface_roi = structure_set.RoiGeometries[self.surface_roi]
 
-        self._surfaceboundingbox = surface_roi.GetBoundingBox()
-
-        pt = offset + self.Top_offset - point.Y() * self._surfaceboundingbox[0]
+        pt = offset + self.Top_offset - point.Y() * self.boundingbox.lower
+        _logger.debug("Transform calculation."
+                      f'pt = {offset} + {self.Top_offset} - '
+                      'point.Y() * {self.boundingbox.lower}\n\t'
+                      f'{pt = }')
         transform = {'M11': 1, 'M12': 0, 'M13': 0, 'M14': pt.x,
                      'M21': 0, 'M22': 1, 'M23': 0, 'M24': pt.y,
                      'M31': 0, 'M32': 0, 'M33': 1, 'M34': pt.z,
@@ -493,9 +519,6 @@ class CouchTop(object):
             examination = icase.PatientModel.Examinations[0]
 
         structure_set = icase.PatientModel.StructureSets[examination.Name]
-
-        source_exam_name = self.template.StructureSetExaminations[0].Name
-
         case_data = get_case_comment_data(icase)
 
         if 'board_offset' in case_data:
@@ -505,6 +528,7 @@ class CouchTop(object):
             create_opts = self.create_opts
             create_opts['TargetExamination'] = examination
             icase.PatientModel.CreateStructuresFromTemplate(**create_opts)
+            self._bounding_box = None
 
             self.update(structure_set)
 
@@ -515,7 +539,7 @@ class CouchTop(object):
                            icase=icase,
                            simple_search=simple_search)
 
-            # self.trim_rois(icase, structure_set)
+            self.trim_rois(icase, structure_set)
 
         if 'board_offset' not in case_data and CouchTop._board_offset:
             case_data['board_offset'] = CouchTop._board_offset
@@ -523,30 +547,44 @@ class CouchTop(object):
                                   icase=icase,
                                   replace=True)
 
-    def trim_rois(self, icase, structure_set):
-        patient_bb = BoundingBox(structure_set.OutlineRoiGeometry)
-        couch_bb = BoundingBox(self.roi_geometries[self.surface_roi])
-        box_bb = couch_bb + patient_bb
+    def trim_rois(self, icase, structure_set, keeptop=False):
+        if not structure_set.OutlineRoiGeometry:
+            _logger.warning("No patient outline, not trimming couch model.")
+            return False
 
-        box_bb.limitz(patient_bb, self.isHN)
+        patient_bb = BoundingBox(structure_set.OutlineRoiGeometry)
+        box_bb = self.boundingbox + patient_bb
+
+        box_bb.limitz(patient_bb, self.isHN or keeptop)
 
         roi_builder = ROI_Builder(icase.PatientModel, structure_set)
-        box = ROI_Builder.CreateROI('box')
-        for roi in self._rois:
-            roi.ab_intersect(rois_a=roi.Name, rois_b=box.Name)
 
-        for roi_name, roi_g in self.roi_geometries.items():
-            if roi_name == self.surface_roi:
-                continue
-            roi_g.GetBoundingBox()
+        with CompositeAction(f"Trim couch ROIs ({self.Name})"):
+            box = roi_builder.CreateROI('box')
+            box.create_box(**box_bb.box_geometry_params(margin=0))
+            for roi in self._rois.values():
+                roi.ab_intersect(rois_a=roi, rois_b=box)
+
+            if _logger.level != logging.DEBUG:
+                box.DeleteRoi()
+
+            surface = self._rois[self.surface_roi]
+            for roi in self._rois.values():
+                if roi == surface:
+                    continue
+                roi.ab_subtraction(rois_a=roi, rois_b=surface)
+
+            self._bounding_box = None
 
     def update(self, structure_set):
-        structset_rois = structure_set.RoiGeometries.Keys
-        self._rois = {roi_name: ROI(roi, structure_set) for roi_name in rois
-                      if roi_name in self.ROI_Names}
+        struct_rois = structure_set.RoiGeometries.Keys
+        self._rois = {roi.OfRoi.Name: ROI(roi, structure_set) for roi in
+                      structure_set.RoiGeometries
+                      if roi.OfRoi.Name in self.ROI_Names}
         self.roi_geometries = {roi_name: structure_set.RoiGeometries[roi_name]
                                for roi_name in self.ROI_Names
-                               if roi_name in rois}
+                               if roi_name in struct_rois}
+        self._bounding_box = None
 
     @classmethod
     def get_board_offset_from_image(cls, img_stack, couch_y,
@@ -564,7 +602,7 @@ class CouchTop(object):
         z = img_stack.Corner.z + max(img_stack.SlicePositions)
         x_offset = 0.
 
-        search_y = couch_y + HN_SEARCH_DELTA
+        search_y = couch_y - HN_SEARCH_DELTA
         if simple_search:
             try:
                 search_point = point(y=search_y)
@@ -654,7 +692,10 @@ class CouchTop(object):
                     _logger.warning(f"Holes not aligned: "
                                     f"{tn_hole_z}, {tp_hole_z}, "
                                     f"{bn_hole_z}, {bp_hole_z}")
-                    return None
+                    raise Warning("Holes not aligned in Z.")
+                else:
+                    _logger.debug("Holes are aligned in the Z direction to "
+                                  f"within {HN_H_DIAM/2} distance.")
 
                 if abs(abs(top_hole_z - bot_hole_z) - HN_H_SEP) > HN_H_DIAM:
                     # Holes aren't spaced right, no further checking yet
@@ -662,21 +703,25 @@ class CouchTop(object):
                     # match.
                     _logger.warning(f"Holes not spaced correctly:"
                                     f" {top_hole_z}, {bot_hole_z}")
-                    return None
+                    raise Warning("Holes not spaced correctly.")
+                else:
+                    _logger.debug("Holes appear to be spaced correctly.")
 
                 # Finally, these look right so return the location of the top
                 # of the board from these holes.  Include the distance from
                 # hole center of the top hole to the edge of the board.
-                _logger.debug("Holes for distance: "
-                              f"{tn_hole_z}, {tp_hole_z}, "
-                              f"{bn_hole_z}, {bp_hole_z}")
+                _logger.debug("Holes for distance:\n\t"
+                              f"{tn_hole_z=}, {tp_hole_z=},\n\t"
+                              f"{bn_hole_z=}, {bp_hole_z=}")
 
                 z = (((top_hole_z + bot_hole_z + HN_H_SEP) / 2)
                      + HN_H1_TO_H2_Z + HN_H1_TO_BOARD_Z)
             except IndexError:
+                raise Warning("Failed to find correct holes.")
                 pass
 
         offset = point(x_offset, 0, z)
+        _logger.debug(f"{offset=}")
         # MAGIC: Store the search result in the class so we don't have to do it
         # again.
         if not cls._board_offset:
@@ -688,37 +733,65 @@ class CouchTop(object):
 
     def move_rois(self, structure_set, couch_y=CT_Couch_TopY,
                   match_z=True, forced_z=None, icase=None, simple_search=True):
+
+        # Invalidate to force recomputing of boundingbox
+        self._bounding_box = None
         examination = structure_set.OnExamination
         img_stack = examination.Series[0].ImageStack
 
-        roi_max_z = max([pt.z for roi in self.ROI_Names
-                         for pt in self.roi_geometries[roi].GetBoundingBox()])
+        roi_max_z = self.boundingbox.upper.z
 
-        z_top_corner = point.Z() * (img_stack.Corner.z
-                                    + max(img_stack.SlicePositions))
+        z_top_edge = point.Z() * (img_stack.Corner.z
+                                  + max(img_stack.SlicePositions))
 
-        if match_z and not forced_z:
+        x_offset = point(0.)
+
+        if match_z and forced_z is None:
             ct_z = guess_couchtop_z(img_stack)
 
             if ct_z and simple_search:
-                z_top_corner.z = ct_z
+                z_top_edge.z = ct_z
                 if self.isHN:
-                    z_top_corner.x = guess_board_x_center(img_stack, couch_y)
+                    try:
+                        _logger.debug(f"Had {ct_z=}, find x_offset")
+                        x_offset.x = guess_board_x_center(img_stack, couch_y)
+                    except (TypeError, ValueError):
+                        pass
             elif self.isHN:
-                board = self.get_board_offset_from_image(img_stack, couch_y,
-                                                         simple_search)
-                if board:
-                    z_top_corner = board
+                try:
+                    board = self.get_board_offset_from_image(img_stack,
+                                                             couch_y,
+                                                             simple_search)
+                    z_top_edge.z = board.z
+                except (TypeError, ValueError, Warning):
+                    # Couldn't find the board, so make sure we don't remove any
+                    # of the couch by setting the bottom edge to be at the
+                    # bottom of the CT.
+                    _logger.warning("Couldn't find H&N board position."
+                                    "  Board should be positioned manually.")
+                    ct = CT_Image_Stack(img_stack)
+                    couch_bottom_z = self.boundingbox.lower.z
+                    z_top_edge.z = roi_max_z + (ct.minz - couch_bottom_z)
+                    _logger.debug("new bottom edge:\n\t"
+                                  "z_top_edge.z = roi_max_z + (ct.minz - "
+                                  "couch_bottom_z\n\t"
+                                  f"{z_top_edge.z} = {roi_max_z} + ({ct.minz}"
+                                  f" - {couch_bottom_z}")
+
             else:
                 if icase is None:
                     icase = get_current("Case")
 
                 if icase.BodySite in SITE_SHIFT:
-                    z_top_corner.z += SITE_SHIFT[icase.BodySite]
+                    z_top_edge.z += SITE_SHIFT[icase.BodySite]
 
-        z = forced_z if forced_z else z_top_corner - point.Z() * roi_max_z
+            z_offset = z_top_edge - point.Z() * roi_max_z
+        elif forced_z is not None:
+            z_offset = point(forced_z)
 
-        offset = point.Y() * couch_y + z
+        _logger.debug(f"offset = point.Y() * {couch_y}+{z_offset}+{x_offset}")
+        offset = point.Y() * couch_y + z_offset + x_offset
+        _logger.debug(f"{offset=}")
 
         transform = self.get_transform(structure_set, offset)
 
@@ -726,6 +799,8 @@ class CouchTop(object):
             structure_set.RoiGeometries[roi].OfRoi.TransformROI3D(
                 Examination=examination,
                 TransformationMatrix=transform)
+
+        self._bounding_box = None
 
     def remove_from_case(self):
         with CompositeAction("Remove {} couch from case.".format(self.Name)):
@@ -905,5 +980,12 @@ def addcouchtoexam(icase, examination=None, plan=None, simple_search=False,
     with CompositeAction(f"Add {top.Name} to case"):
         top.add_to_case(icase, examination, top_height,
                         simple_search=simple_search)
+
+        try:
+            for beamset in plan.BeamSets:
+                beamset.SetDefaultDoseGrid(VoxelSize=point(0.2))
+        except (AttributeError, TypeError):
+            _logger.warning("Unable to reset default dose grid size for plan.",
+                            exc_info=True)
 
     return top
