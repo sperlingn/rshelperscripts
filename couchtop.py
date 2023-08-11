@@ -52,15 +52,11 @@ NON_HN_SITES = {"Left Breast",
                 "Left Lower Extremity",
                 "Right Lower Extremity"}
 
-SITE_SHIFT = {"Left Breast": 15.,
-              "Right Breast": 15.,
-              "Thorax": 20.,
-              "Abdomen": 35.,
-              "Pelvis": 55.,
-              "Left Upper Extremity": 0.,
-              "Right Upper Extremity": 0.,
-              "Left Lower Extremity": 0.,
-              "Right Lower Extremity": 0.}
+SITE_SHIFT = {"Left Breast": -45.,
+              "Right Breast": -45.,
+              "Thorax": -30.,
+              "Abdomen": -20.,
+              "Pelvis": 0.}
 
 MACHINE_SEARCHES = {'Edge':     [['brain', False],  # Brain usually on Edge
                                  ['prostate', False],  # Prostate usually Edge
@@ -511,8 +507,7 @@ class CouchTop(object):
                 'InitializationOption': "AlignImageCenters"}
 
     def add_to_case(self, icase=None, examination=None,
-                    couch_y=CT_Couch_TopY, match_z=True, forced_z=None,
-                    simple_search=True):
+                    couch_y=CT_Couch_TopY, match_z=True, force_z=None):
         if icase is None:
             icase = get_current("Case")
         if examination is None:
@@ -535,9 +530,8 @@ class CouchTop(object):
             self.move_rois(structure_set=structure_set,
                            couch_y=couch_y,
                            match_z=match_z,
-                           forced_z=forced_z,
-                           icase=icase,
-                           simple_search=simple_search)
+                           force_z=force_z,
+                           icase=icase)
 
             self.trim_rois(icase, structure_set)
 
@@ -587,8 +581,7 @@ class CouchTop(object):
         self._bounding_box = None
 
     @classmethod
-    def get_board_offset_from_image(cls, img_stack, couch_y,
-                                    simple_search=True):
+    def get_board_offset_from_image(cls, img_stack, couch_y):
         """
         Searches for coordinate of top of board.
         Simple search looks only for the central hole.
@@ -597,37 +590,48 @@ class CouchTop(object):
           as CT scans often cut off the top of the board.
         """
         if cls._board_offset and str(img_stack) in cls._board_offset:
-            return cls._board_offset[str(img_stack)]
+            _logger.debug(f"Found offset in class: {cls._board_offset}")
+            return cls._board_offset[str(img_stack)].copy()
 
         z = img_stack.Corner.z + max(img_stack.SlicePositions)
-        x_offset = 0.
+
+        # To start, get a guess at the first hole, then find the center
+        # of the H&N Board in the X direction.  We will then move the
+        # search points based on any shift in this image.
+
+        try:
+            _logger.debug(f"Searching for board center at height {couch_y}")
+            x_offset = guess_board_x_center(img_stack, couch_y)
+            _logger.debug(f"Found board center at {x_offset}")
+        except (TypeError, ValueError, IndexError, Warning):
+            _logger.warning("Couldn't find center of board, assuming 0.")
+            x_offset = 0.
 
         search_y = couch_y - HN_SEARCH_DELTA
-        if simple_search:
-            try:
-                search_point = point(y=search_y)
-                found_point = find_first_edge(img_stack,
-                                              search_start=search_point,
-                                              line_direction='-z',
-                                              rising_edge=True)
-                _logger.debug(f"Found start of board at {found_point}.")
-                if found_point:
-                    # Naively assume that the first point is the start of the
-                    # board
-                    z = found_point.z
-            except Exception as e:
-                _logger.warning(str(e), exc_info=True)
-                return None
-        else:
+        try:
+            search_point = point(x=x_offset, y=search_y)
+            _logger.debug(f"Searching for top center hole at {search_point}")
+            # Search for top center hole (tc)
+            tc_edges = find_edges(img_stack, search_start=search_point,
+                                  line_direction='-z', z_avg=0.05)
+
+            tc_holes = holes_by_width(edges=tc_edges, width=HN_H_DIAM,
+                                      tolerance=0.1)
+
+            tc_holes_s = sorted(tc_holes, key=attrgetter('z'), reverse=True)
+
+            tc_hole_z = tc_holes_s[0].z
+
+            _logger.debug(f"Found start of board at {tc_holes_s[0]}.")
+
+            # Naively assume that the first point is the start of the
+            # board
+            z = tc_hole_z + HN_H1_TO_BOARD_Z
+        except Exception:
+            _logger.warning("Couldn't find central hole, trying other holes",
+                            exc_info=True)
             try:
                 # Ignore the central hole and look instead for the side holes.
-
-                # To start, get a guess at the first hole, then find the center
-                # of the H&N Board in the X direction.  We will then move the
-                # search points based on any shift in this image.
-
-                x_offset = guess_board_x_center(img_stack, couch_y)
-
                 tp_search_start = point(x=HN_H2_X + x_offset, y=search_y)
                 tn_search_start = point(x=-HN_H2_X + x_offset, y=search_y)
 
@@ -725,15 +729,39 @@ class CouchTop(object):
         # MAGIC: Store the search result in the class so we don't have to do it
         # again.
         if not cls._board_offset:
-            cls._board_offset = {str(img_stack): offset}
-        else:
-            cls._board_offset[str(img_stack)] = offset
+            _logger.debug("Creating cls._board_offset")
+            cls._board_offset = {}
+
+        _logger.debug(f"Storing cls._board_offset[img_stack] = {offset}")
+        cls._board_offset[str(img_stack)] = offset.copy()
 
         return offset
 
-    def get_offset(self, structure_set, simple_search, couch_y, icase,
-                   forced_z=None):
-        if forced_z is None:
+    def get_hn_offset(self, img_stack, couch_y, ct_z):
+        _logger.debug(f"Had {ct_z=}, find x_offset")
+        try:
+            return self.get_board_offset_from_image(img_stack, couch_y)
+        except (TypeError, ValueError, Warning):
+            # Couldn't find the board, so make sure we don't remove any
+            # of the couch by setting the bottom edge to be at the
+            # bottom of the CT.
+            _logger.warning("Couldn't find H&N board position."
+                            "  Board should be positioned manually.")
+            pass
+
+        offset = point()
+        try:
+            offset.x = guess_board_x_center(img_stack, couch_y)
+        except (TypeError, ValueError):
+            _logger.warning("Couldn't center H&N board position.")
+
+        if ct_z:
+            offset.z = ct_z
+
+        return offset
+
+    def get_offset(self, structure_set, couch_y, icase, force_z=None):
+        if force_z is None:
             examination = structure_set.OnExamination
             img_stack = examination.Series[0].ImageStack
 
@@ -742,54 +770,45 @@ class CouchTop(object):
             ct = CT_Image_Stack(img_stack)
             ct_z = guess_couchtop_z(img_stack)
 
-            # Default offset to move the top of the board to the top of the CT
-            offset = point.Z() * ct.maxz
+            # Default to move the bottom of the board to the bottom of the CT
+            offset = point.Z() * (couch_bb.upper.z +
+                                  (ct.minz - couch_bb.lower.z))
 
-            if ct_z and simple_search:
+            if self.isHN:
+                offset = self.get_hn_offset(img_stack, couch_y, ct_z)
+            elif ct_z:
                 offset.z = ct_z
-                if self.isHN:
-                    try:
-                        _logger.debug(f"Had {ct_z=}, find x_offset")
-                        offset.x = guess_board_x_center(img_stack, couch_y)
-                    except (TypeError, ValueError):
-                        pass
-            elif self.isHN:
-                try:
-                    board = self.get_board_offset_from_image(img_stack,
-                                                             couch_y,
-                                                             simple_search)
-                    offset.z = board.z
-                except (TypeError, ValueError, Warning):
-                    # Couldn't find the board, so make sure we don't remove any
-                    # of the couch by setting the bottom edge to be at the
-                    # bottom of the CT.
-                    _logger.warning("Couldn't find H&N board position."
-                                    "  Board should be positioned manually.")
-                    offset.z = couch_bb.upper.z + (ct.minz - couch_bb.lower.z)
-
             else:
+                # Not H&N, not simple search, figure out from body site?
                 if icase is None:
                     icase = get_current("Case")
 
                 if icase.BodySite in SITE_SHIFT:
+                    _logger.debug("Can't determine origin from CT, shifting "
+                                  "based on treatment site: "
+                                  f"{icase.BodySite} = "
+                                  f"{SITE_SHIFT[icase.BodySite]}")
                     offset.z += SITE_SHIFT[icase.BodySite]
 
             offset -= point.Z() * couch_bb.upper.z
         else:
-            offset = point(forced_z)
+            try:
+                offset = point(z=float(force_z))
+            except (ValueError, TypeError):
+                offset = point(force_z)
 
         offset += point.Y() * couch_y
         _logger.debug(f"{offset=}")
         return offset
 
     def move_rois(self, structure_set, couch_y=CT_Couch_TopY,
-                  match_z=True, forced_z=None, icase=None, simple_search=True):
+                  match_z=True, force_z=None, icase=None):
 
         # Invalidate to force recomputing of boundingbox
         self._bounding_box = None
 
-        offset = self.get_offset(structure_set, simple_search,
-                                 couch_y, icase, forced_z)
+        offset = self.get_offset(structure_set,
+                                 couch_y, icase, force_z)
 
         if not match_z:
             offset.z = 0
@@ -939,8 +958,8 @@ class CouchTopCollection(object):
         return str(self)
 
 
-def addcouchtoexam(icase, examination=None, plan=None, simple_search=False,
-                   patient_db=get_current("PatientDB")):
+def addcouchtoexam(icase, examination=None, plan=None,
+                   patient_db=get_current("PatientDB"), **kwargs):
 
     if not examination:
         examination = icase.PatientModel.Examinations[0]
@@ -979,8 +998,7 @@ def addcouchtoexam(icase, examination=None, plan=None, simple_search=False,
     top = tops.get_first_top(machine=machine, isHN=isHN)
 
     with CompositeAction(f"Add {top.Name} to case"):
-        top.add_to_case(icase, examination, top_height,
-                        simple_search=simple_search)
+        top.add_to_case(icase, examination, top_height, **kwargs)
 
         try:
             for beamset in plan.BeamSets:
