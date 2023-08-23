@@ -1,7 +1,7 @@
 import logging
 from math import sqrt, sin, cos, pi
 from typing import Sequence, List, Tuple
-from .external import rs_hasattr, rs_callable
+from .external import rs_callable
 
 _logger = logging.getLogger(__name__)
 
@@ -199,6 +199,9 @@ class point(dict):
             return all((self[c] < other_p[c] for c in self))
         else:
             raise NotImplementedError
+
+    def __abs__(self):
+        return type(self)({k: abs(self[k]) for k in self})
 
     def copy(self):
         return self+0.
@@ -423,13 +426,15 @@ class CT_Image_Stack():
     _bounding_box = None
     _npixels = None
     _res = None
+    _img_stack = None
 
     def __init__(self, img_stack):
         self._img_stack = img_stack
-        if point(img_stack.SliceDirection) != point.Z():
+        if abs(point(img_stack.SliceDirection)) != point.Z():
             raise NotImplementedError("Can only handle Z direction scans.")
 
-        z_res = img_stack.SlicePositions[1] - img_stack.SlicePositions[0]
+        z_res = ((img_stack.SlicePositions[1] - img_stack.SlicePositions[0])
+                 * img_stack.SliceDirection.z)
 
         self._res = point({'x': img_stack.PixelSize.x,
                            'y': img_stack.PixelSize.y,
@@ -439,14 +444,17 @@ class CT_Image_Stack():
                                'y': img_stack.NrPixels.y,
                                'z': len(img_stack.SlicePositions)})
 
-        self._size = self._npixels / self._res
+        self._size = self._npixels * self._res
 
-        self._bounding_box = BoundingBox([point(img_stack.Corner),
-                                          img_stack.Corner + self._size])
+        self._bounding_box = BoundingBox(img_stack)
+
+    # Act like a regular RS ImageStack for anything we haven't overriden.
+    def __getattr__(self, attr):
+        return getattr(self._img_stack, attr)
 
     @property
     def size(self):
-        return self._size.copy()
+        return abs(self._size)
 
     @property
     def n_pixels(self):
@@ -470,6 +478,193 @@ class CT_Image_Stack():
     @property
     def minz(self):
         return self._bounding_box[0].z
+
+    @property
+    def image_center(self):
+        return self._bounding_box.center
+
+    @property
+    def corner(self):
+        return self._bounding_box.lower
+
+    @staticmethod
+    def find_fwhm_edges(inarray, threshold='global_half_max', min_value=None):
+        min_value = min_value if min_value is not None else min(inarray)
+        last_max = min_value
+        last_i = 0
+        try:
+            threshold = float(threshold)
+        except ValueError:
+            # Not a number, for now assume it is global half max
+            threshold = (max(inarray)+min(inarray))/2.
+
+        edge_v = threshold
+
+        indices = []
+        try:
+            # Iterate through and find the next start of a peak.
+            for i, v in enumerate(inarray):
+                if last_i:
+                    if v > last_max:
+                        last_max = v
+                        edge_v = (last_max + min_value)/2.
+
+                    if v <= edge_v:
+                        indices.append((last_i, i))
+                        _logger.debug(f"Adding ({last_i}, {i}) to list.")
+                        last_i = 0
+                        """
+                        indices.append(i + (indices[-2] if len(indices) > 2
+                    else 0))
+                    return find_fwhm_edges(inarray[i+1:], threshold,
+                indices, min_value)
+                """
+                elif v > edge_v:
+                    last_i = i
+        except (IndexError, SystemError) as e:
+            _logger.info(str(e), exc_info=True)
+            pass
+
+        # Fall to here when we have an IndexError, and when we run out of
+        # points in the array.
+        if last_i:
+            indices.append((last_i, -1))
+        return indices
+
+    def find_edges(self, search_start=None, x_avg=None, y_avg=None,
+                   z_avg=None, direction='-y', threshold=-600):
+        line_invert = '-' in direction
+        ldir = direction[-1]
+        lvec = point({ldir: 1})
+
+        resolution = self.res
+        if x_avg is not None:
+            resolution.x = x_avg
+
+        if y_avg is not None:
+            resolution.y = y_avg
+
+        if z_avg is not None:
+            resolution.z = z_avg
+
+        voxelcount = (((self.size//resolution) - 1) * lvec) + 1
+
+        # Build a point out of the search start, and any coordinate which is
+        # None should be set to the image_center for that coordinate.
+        image_center = self.image_center
+        search_pt = point({idx: (v if v is not None
+                                 else image_center[idx])
+                           for idx, v in point(search_start).items()})
+
+        # If search_start was not set, this will start the search from the
+        # image center in all directions except the search direction where it
+        # will start at the corner.  Otherwise, if search_start has any points
+        # defined (x y or z) it will use those points (except it will also
+        # start from the corner for the search direction).
+
+        corner = (self.corner * lvec) + (search_pt * ~lvec)
+
+        _logger.debug(f"\n\t{corner=}\n\t{self.corner=}\n\t{lvec=}")
+
+        _logger.debug("Searching:\n\t"
+                      f"ires:\t{self._res}\n\t"
+                      f"np:\t{self._npixels}\n\t"
+                      f"size:\t{self._size}\n\t"
+                      f"res:\t{resolution}\n\t"
+                      f"vc:\t{voxelcount}\n\t"
+                      f"corner:\t{corner}\n\t"
+                      f"search_pt:\t{search_pt}")
+
+        voxelsizes = resolution
+
+        _logger.debug(f"{voxelcount=} {voxelsizes=} {corner=}")
+
+        try:
+            line_pos = [corner[ldir] + pt * resolution[ldir]
+                        for pt in range(voxelcount[ldir])]
+
+            ridog_kwargs = {"NrVoxelsVec": [voxelcount],
+                            "VoxelSizesVec": [voxelsizes],
+                            "CornerVec": [corner]}
+            lines = self._img_stack.ResampleImageDataOnGrids(**ridog_kwargs)
+            line = list(lines[0])
+            if line_invert:
+                line_pos = line_pos[::-1]
+                line = line[::-1]
+
+            edge_pairs = find_fwhm_edges(line, threshold)
+
+            _logger.info("Found line:\n\t"
+                         f"{edge_pairs = }\n\t"
+                         f"{lvec = }")
+            _logger.debug("Additional...\n\t"
+                          f"{line_pos = }\n\t"
+                          f"{line = }")
+
+            if not edge_pairs:
+                # If we never found a good edge, the couch edge must be outside
+                # of the FOV.  Return Empty list
+                return []
+
+            # Return a list of paired edges in raystation coordinates.
+            edge_pairs_rs = [(((line_pos[pair[0]] * lvec)
+                               + (corner * ~lvec)),
+                              ((line_pos[pair[1]] * lvec)
+                               + (corner * ~lvec)))
+                             for pair in edge_pairs]
+            _logger.debug(f"{edge_pairs_rs = }")
+            _loc_ = locals()
+            _logger.log(level=logging.DEBUG-1, msg=f"\n{_loc_=}",
+                        stack_info=True)
+            return edge_pairs_rs
+
+            # Return a simlpe list of edges in raystation coordinates.
+            return [((line_pos[x] * lvec)
+                    + (corner * ~lvec)) for x in edge_pairs]
+
+        except (TypeError, ValueError, IndexError, SystemError) as e:
+            _logger.exception(e)
+            return []
+
+    def find_first_edge(self, search_start=None,
+                        x_avg=None, y_avg=None, z_avg=None,
+                        direction=None, threshold=None, rising_edge=True):
+
+        kwargs = {k: v for k, v in locals().items() if v is not None}
+        del kwargs['rising_edge']
+        del kwargs['self']
+        _logger.debug(f"{kwargs=}")
+        return self.find_edges(**kwargs)[0][not rising_edge]
+
+    @staticmethod
+    def holes_by_width(edges: Sequence[Tuple[point, point]],
+                       width: float,
+                       tolerance: float = 0.2,
+                       rising_to_falling: bool = True
+                       ) -> List[point]:
+        """
+        Returns a list of point, width pairs for each edge that is close to the
+        width specified (to within the _tolerance_ value).
+        """
+        edge_pair_centers = []
+
+        if not rising_to_falling:
+            raise NotImplementedError("Falling to rising not implemented.")
+
+        for i, pair_i in enumerate(edges):
+            # Loop through all falling edge points after i
+            for pair_next in edges[i:]:
+                _logger.debug(f"On index {i} {pair_i!s} "
+                              f"looking at {pair_next!s}")
+                center = (pair_i[0] + pair_next[1])/2.
+                _logger.debug(f"On index {i} {pair_i[0]!s} to "
+                              f"{pair_next[1]!s} center {center!s}")
+                dist = (pair_i[0] - pair_next[1]).magnitude
+                _logger.debug(f"Point distance is {dist:.2f}")
+                if abs(dist - width) <= tolerance:
+                    edge_pair_centers.append(Hole(center, dist))
+
+        return sorted(edge_pair_centers)
 
 
 def find_fwhm_edges(inarray, threshold='global_half_max', min_value=None):
@@ -517,9 +712,9 @@ def find_fwhm_edges(inarray, threshold='global_half_max', min_value=None):
 
 
 def find_edges(img_stack, search_start=None, x_avg=None, y_avg=None,
-               z_avg=None, line_direction='-y', threshold=-600):
-    line_invert = '-' in line_direction
-    ldir = line_direction[-1] if line_direction[-1] in ('x', 'y', 'z') else 'y'
+               z_avg=None, direction='-y', threshold=-600):
+    line_invert = '-' in direction
+    ldir = direction[-1] if direction[-1] in ('x', 'y', 'z') else 'y'
     lvec = point({ldir: 1})
 
     z_res = img_stack.SlicePositions[1] - img_stack.SlicePositions[0]
@@ -631,7 +826,7 @@ def find_edges(img_stack, search_start=None, x_avg=None, y_avg=None,
 
 def find_first_edge(img_stack, search_start=None,
                     x_avg=None, y_avg=None, z_avg=None,
-                    line_direction=None, threshold=None, rising_edge=True):
+                    direction=None, threshold=None, rising_edge=True):
     kwargs = {k: v for k, v in locals().items() if v is not None}
     del kwargs['img_stack']
     del kwargs['rising_edge']
@@ -721,9 +916,16 @@ class AffineMatrix():
 
     def __init__(self, x=0, y=0, z=0, pitch=0, yaw=0, roll=0,
                  invert_t=False, order='pyr'):
-        self.x = x
-        self.y = y
-        self.z = z
+
+        if point.__ispointlike__(x):
+            pt = point(x)
+            for coord in pt._COORDS:
+                setattr(self, coord, pt[coord])
+        else:
+            self.x = x
+            self.y = y
+            self.z = z
+
         self.pitch = pitch
         self.yaw = yaw
         self.roll = roll
@@ -800,15 +1002,21 @@ class AffineMatrix():
         y = self.y*(-1)**int(self.invert_t)
         z = self.z*(-1)**int(self.invert_t)
 
-        m = {'M11': ca*cb, 'M12': ca*sb*sg-sa*cg,
-        'M13': ca*sb*cg+sa*sg, 'M14': x,
+        m = {
+        'M11':ca*cb,  'M12': ca*sb*sg-sa*cg, 'M13': ca*sb*cg+sa*sg, 'M14': x,
         'M21': sa*cb, 'M22': sa*sb*sg+ca*cg, 'M23': sa*sb*cg-ca*sg, 'M24': y,
         'M31': -sb,   'M32': cb*sg,          'M33': cb*cg,          'M34': z,
         'M41': 0,     'M42': 0,              'M43': 0,              'M44': 1}
         """
         m = self.matrix
-        odict = {'M{}{}'.format(ri+1, ci+1): value
+        odict = {'M{}{}'.format(ri+1, ci+1): float(value)
                  for ri, row in enumerate(m)
                  for ci, value in enumerate(row)}
 
         return odict
+
+    def __repr__(self):
+        return '{}({})'.format(self.__class__.__name__, repr(self.matrix))
+
+    def __str__(self):
+        return '\n'.join('\t'.join(f'{c:.2f}' for c in r) for r in self.matrix)

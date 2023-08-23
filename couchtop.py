@@ -15,8 +15,7 @@ except ImportError:
             _logger.info("MessageBox: args={}, kwargs={}", args, kwargs)
             return True
 
-from .points import (holes_by_width, point, find_first_edge, find_edges,
-                     BoundingBox, CT_Image_Stack)
+from .points import (point, BoundingBox, CT_Image_Stack, AffineMatrix)
 from .rsdicomread import read_dataset
 from .case_comment_data import (get_case_comment_data, set_case_comment_data,
                                 get_data)
@@ -36,7 +35,7 @@ _logger = logging.getLogger(__name__)
 #   (e.g. '1.2......' instead of '<ScriptObject id=-2147404801>')
 
 CT_Couch_TopY = 20.8
-CT_Top_NegativeX = -24.5
+CT_Top_NegativeX = -24
 HN_SEARCH_DELTA = 1.
 
 HN_SITES = {"Brain",
@@ -91,7 +90,7 @@ KNOWN_TOPS = {
          'tx_machines': 'Edge'},
     'TrueBeam Head & Neck Model':
         {'surface_roi': 'Surface Shell - TrueBeam',
-         'default_offset': {'x': 0.15, 'y': 0., 'z': 0.4},
+         'default_offset': {'x': -0.484, 'y': -2.25, 'z': 0.452},
          'tx_machines': 'TrueBeam'}
 }
 
@@ -196,19 +195,19 @@ def guess_board_x_center(img_stack, couch_y):
     # TODO: Put this in a try-except and fail to a new z for
     # finding the width.
     # Need to account for top hole not being on image
-    guess_edges = find_edges(img_stack, search_start=init_guess,
-                             line_direction='-z', z_avg=0.05)
-    guess_holes = holes_by_width(edges=guess_edges,
-                                 width=HN_H_DIAM,
-                                 tolerance=1.)
+    guess_edges = img_stack.find_edges(search_start=init_guess,
+                                       direction='-z', z_avg=0.05)
+    guess_holes = img_stack.holes_by_width(edges=guess_edges,
+                                           width=HN_H_DIAM,
+                                           tolerance=1.)
     if guess_holes:
         init_guess.z = guess_holes[-1].center.z
     else:
         init_guess.z = (img_stack.Corner.z
                         + (max(img_stack.SlicePositions)/2))
 
-    width_edges = find_edges(img_stack, search_start=init_guess,
-                             line_direction='x')
+    width_edges = img_stack.find_edges(search_start=init_guess,
+                                       direction='x')
 
     if width_edges:
         x_offset = (width_edges[-1][1].x + width_edges[0][0].x)/2
@@ -284,23 +283,23 @@ def find_table_height(img_stack, resolution=None, search_start=None,
     # Minimum value for a peak to be considered real
     threshold = -200
 
+    # For any prone images, get the other side of the edge
+    is_rising = img_stack.ColumnDirection.y == -1
+
     try:
-        edge = find_first_edge(img_stack,
-                               search_start=search_start,
-                               x_avg=x_avg,
-                               y_avg=y_avg,
-                               z_avg=z_avg,
-                               line_direction='-y',
-                               threshold=threshold,
-                               rising_edge=False)
+        edge = img_stack.find_first_edge(search_start=search_start,
+                                         x_avg=x_avg,
+                                         y_avg=y_avg,
+                                         z_avg=z_avg,
+                                         direction='-y',
+                                         threshold=threshold,
+                                         rising_edge=is_rising)
 
         _logger.debug(f"{edge=}")
         return edge.y
 
-    except TypeError:
-        return default
-    except (ValueError, IndexError, SystemError) as e:
-        _logger.exception(e)
+    except (ValueError, IndexError, SystemError, TypeError):
+        _logger.exception("Couldn't find top height, using default.")
         return default
 
 
@@ -473,26 +472,54 @@ class CouchTop(object):
     def get_transform(self, structure_set, offset):
         # get from position of top, need ROIs to be present.
 
-        pt = offset + self.Top_offset - point.Y() * self.boundingbox.lower
-        _logger.debug("Transform calculation."
+        pt_pos = structure_set.OnExamination.PatientPosition
+
+        if pt_pos[2] == 'S':
+            pt = offset + self.Top_offset - point.Y() * self.boundingbox.lower
+        elif pt_pos[2] == 'P':
+            pt = offset + self.Top_offset - point.Y() * self.boundingbox.upper
+        _logger.debug("Transform calculation.\n\t"
                       f'pt = {offset} + {self.Top_offset} - '
-                      'point.Y() * {self.boundingbox.lower}\n\t'
+                      f'point.Y() * {self.boundingbox.lower}\n\t'
                       f'{pt = }')
-        transform = {'M11': 1, 'M12': 0, 'M13': 0, 'M14': pt.x,
-                     'M21': 0, 'M22': 1, 'M23': 0, 'M24': pt.y,
-                     'M31': 0, 'M32': 0, 'M33': 1, 'M34': pt.z,
-                     'M41': 0, 'M42': 0, 'M43': 0, 'M44': 1}
+
+        transform = AffineMatrix(pt)
 
         _logger.debug(f'{transform}')
-        # Ensure that transform is a valid matrix of floats as RS will crash if
-        # there are nonetypes or anything else in here.
-        try:
-            transform = {k: float(v) for k, v in transform.items()}
-        except TypeError as e:
-            _logger.exception('A key in the transform was not a float.')
-            raise e
 
-        return transform
+        return transform.rs_matrix
+
+    def _apply_transform(self, structure_set, transform):
+        for roi in self.ROI_Names:
+            structure_set.RoiGeometries[roi].OfRoi.TransformROI3D(
+                Examination=structure_set.OnExamination,
+                TransformationMatrix=transform)
+
+        self._bounding_box = None
+
+    def correct_orientation(self, structure_set, icase):
+        pt_pos = structure_set.OnExamination.PatientPosition
+        couch_pos = self.template.StructureSetExaminations[0].PatientPosition
+
+        if pt_pos not in ('HFS', 'FFS', 'HFP', 'FFP'):
+            raise RuntimeError(f"Patient orientation '{pt_pos}'"
+                               " is not supported at this time.")
+
+        if pt_pos == couch_pos:
+            return
+
+        amat = AffineMatrix()
+        if pt_pos[0] != couch_pos[0]:
+            # HFx vs FFx, yaw 180
+            amat.yaw = 180.
+
+        if pt_pos[2] != couch_pos[2]:
+            # xxS vs xxP, roll 180
+            amat.roll = 180.
+
+        transform = amat.rs_matrix
+
+        self._apply_transform(structure_set, transform)
 
     @property
     def create_opts(self):
@@ -526,6 +553,9 @@ class CouchTop(object):
             self._bounding_box = None
 
             self.update(structure_set)
+
+            self.correct_orientation(structure_set=structure_set,
+                                     icase=icase)
 
             self.move_rois(structure_set=structure_set,
                            couch_y=couch_y,
@@ -612,11 +642,12 @@ class CouchTop(object):
             search_point = point(x=x_offset, y=search_y)
             _logger.debug(f"Searching for top center hole at {search_point}")
             # Search for top center hole (tc)
-            tc_edges = find_edges(img_stack, search_start=search_point,
-                                  line_direction='-z', z_avg=0.05)
+            tc_edges = img_stack.find_edges(search_start=search_point,
+                                            direction='-z', z_avg=0.05)
 
-            tc_holes = holes_by_width(edges=tc_edges, width=HN_H_DIAM,
-                                      tolerance=0.1)
+            tc_holes = img_stack.holes_by_width(edges=tc_edges,
+                                                width=HN_H_DIAM,
+                                                tolerance=0.1)
 
             tc_holes_s = sorted(tc_holes, key=attrgetter('z'), reverse=True)
 
@@ -643,27 +674,27 @@ class CouchTop(object):
                 # (HN_H_DIAM +- some margin)  If that works, it will try to
                 # find corresponding points that are within the sensible
                 # distances for each other hole.
-                tp_edges = find_edges(img_stack, search_start=tp_search_start,
-                                      line_direction='-z', z_avg=0.05)
-                tn_edges = find_edges(img_stack, search_start=tn_search_start,
-                                      line_direction='-z', z_avg=0.05)
-                bp_edges = find_edges(img_stack, search_start=bp_search_start,
-                                      line_direction='-z', z_avg=0.05)
-                bn_edges = find_edges(img_stack, search_start=bn_search_start,
-                                      line_direction='-z', z_avg=0.05)
+                tp_edges = img_stack.find_edges(search_start=tp_search_start,
+                                                direction='-z', z_avg=0.05)
+                tn_edges = img_stack.find_edges(search_start=tn_search_start,
+                                                direction='-z', z_avg=0.05)
+                bp_edges = img_stack.find_edges(search_start=bp_search_start,
+                                                direction='-z', z_avg=0.05)
+                bn_edges = img_stack.find_edges(search_start=bn_search_start,
+                                                direction='-z', z_avg=0.05)
 
-                tp_holes = holes_by_width(edges=tp_edges,
-                                          width=HN_H_DIAM,
-                                          tolerance=1.)
-                tn_holes = holes_by_width(edges=tn_edges,
-                                          width=HN_H_DIAM,
-                                          tolerance=1.)
-                bp_holes = holes_by_width(edges=bp_edges,
-                                          width=HN_H_DIAM,
-                                          tolerance=1.)
-                bn_holes = holes_by_width(edges=bn_edges,
-                                          width=HN_H_DIAM,
-                                          tolerance=1.)
+                tp_holes = img_stack.holes_by_width(edges=tp_edges,
+                                                    width=HN_H_DIAM,
+                                                    tolerance=1.)
+                tn_holes = img_stack.holes_by_width(edges=tn_edges,
+                                                    width=HN_H_DIAM,
+                                                    tolerance=1.)
+                bp_holes = img_stack.holes_by_width(edges=bp_edges,
+                                                    width=HN_H_DIAM,
+                                                    tolerance=1.)
+                bn_holes = img_stack.holes_by_width(edges=bn_edges,
+                                                    width=HN_H_DIAM,
+                                                    tolerance=1.)
 
                 agz = attrgetter('z')
 
@@ -763,11 +794,11 @@ class CouchTop(object):
     def get_offset(self, structure_set, couch_y, icase, force_z=None):
         if force_z is None:
             examination = structure_set.OnExamination
-            img_stack = examination.Series[0].ImageStack
+            img_stack = CT_Image_Stack(examination.Series[0].ImageStack)
 
             couch_bb = self.boundingbox
 
-            ct = CT_Image_Stack(img_stack)
+            ct = img_stack
             ct_z = guess_couchtop_z(img_stack)
 
             # Default to move the bottom of the board to the bottom of the CT
@@ -815,12 +846,7 @@ class CouchTop(object):
 
         transform = self.get_transform(structure_set, offset)
 
-        for roi in self.ROI_Names:
-            structure_set.RoiGeometries[roi].OfRoi.TransformROI3D(
-                Examination=structure_set.OnExamination,
-                TransformationMatrix=transform)
-
-        self._bounding_box = None
+        self._apply_transform(structure_set, transform)
 
     def remove_from_case(self):
         with CompositeAction("Remove {} couch from case.".format(self.Name)):
@@ -965,7 +991,7 @@ def addcouchtoexam(icase, examination=None, plan=None,
         examination = icase.PatientModel.Examinations[0]
 
     structure_set = icase.PatientModel.StructureSets[examination.Name]
-    img_stack = examination.Series[0].ImageStack
+    img_stack = CT_Image_Stack(examination.Series[0].ImageStack)
 
     tops = CouchTopCollection(use_known=True)
 
