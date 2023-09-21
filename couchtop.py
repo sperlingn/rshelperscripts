@@ -1005,7 +1005,11 @@ def addcouchtoexam(icase, examination=None, plan=None,
             while existing_tops:
                 existing_tops.pop().remove_from_case()
 
-    top_height = get_or_find_table_height(img_stack, icase=icase)
+    if 'couch_y' in kwargs:
+        top_height = kwargs['couch_y']
+        del kwargs['couch_y']
+    else:
+        top_height = get_or_find_table_height(img_stack, icase=icase)
     isHN = test_for_hn(icase, img_stack)
     machine = ''
     try:
