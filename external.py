@@ -1,6 +1,10 @@
 from enum import IntEnum
+import sys
 import logging as _logging
 _logger = _logging.getLogger(__name__)
+
+
+__opts = {}
 
 
 def helperoverride(function):
@@ -218,5 +222,20 @@ def rs_callable(obj, attrname):
     except (AttributeError, ValueError, KeyError, IndexError):
         return False
 
+
+def get_module_opt(opt_name, default=None):
+    mod_opts = sys.modules[__name__].__opts
+
+    return mod_opts[opt_name] if opt_name in mod_opts else default
+
+
+def set_module_opt(opt_name, value):
+    mod_opts = sys.modules[__name__].__opts
+    mod_opts[opt_name] = value
+
+
+def set_module_opts(**kwargs):
+    for opt, val in kwargs.items():
+        set_module_opt(opt, val)
 
 # __all__ = [dcmread, CompositeAction, get_current]

@@ -1,49 +1,64 @@
 from pickle import dumps, loads
 from lzma import compress, decompress, LZMAError
 from base64 import b64encode, b64decode
+import re
 import logging
 
 from .external import CompositeAction
 
 _logger = logging.getLogger(__name__)
-VALIDATION_TEMPLATE = "Validated {v_type}"
+# Based on:
+# dicom.nema.org/medical/dicom/current/output/chtml/part05/chapter_9.html
+UID_RE = re.compile(r'(0|[1-9][0-9]*)(\.(0|[1-9][0-9]*))*')
+
+
+def filter_lines(lines, re=UID_RE):
+    # Returns lines matching re and those that don't.
+
+    return ([line for line in lines if re.match(line)],
+            [line for line in lines if not re.match(line)])
 
 
 def set_validation_comment(plan, beam_set, validation_type, status=True):
-    # TODO: Build up better using RegExp and condense multiple Validation Types
-    # into a single line.
-    template = VALIDATION_TEMPLATE.format(v_type=validation_type)
-    lines = [line for line in plan.Comments.split('\n')
-             if template not in line and line]
-    validation_lines = [line for line in plan.Comments.split('\n') if
-                        template in line]
+    try:
+        existing = plan.Comments.split('\n')
+    except (TypeError, AttributeError):
+        existing = []
+
+    uid_lines, str_lines = filter_lines(existing)
 
     # Check for existance of a Validated line.
-    uids = set()
     plan_uids = {bs.ModificationInfo.DicomUID for bs in plan.BeamSets
                  if bs.ModificationInfo}
 
     # Get current list of UIDs from validation_line
-    # Current format for validation: "Validated <Type>: <UID>[, <UID2>...]"
-    validated_uids = {line.strip() for vline in validation_lines for line in
-                      vline.split(': ')[1].split(',')}
+    # Current format for validation: "<UID>: <Type>[, <Type>...]"
+    validated_uids = {line.split(':')[0].strip():
+                      set(map(str.strip, line.split(':')[1].split(',')))
+                      for line in uid_lines}
 
     # Only append those lines that are valid in the current plan
     # This should catch when plans change and have already been validated
-    uids |= validated_uids & plan_uids
+    for uid in set(validated_uids) - plan_uids:
+        del validated_uids[uid]
 
     this_uid = (beam_set.ModificationInfo.DicomUID if beam_set.ModificationInfo
                 else f'{beam_set.DicomPlanLabel}')
 
     if status:
-        uids.add(this_uid)
-    else:
-        uids.discard(this_uid)
+        try:
+            validated_uids[this_uid].add(validation_type)
+        except (AttributeError, ValueError, TypeError, KeyError):
+            validated_uids[this_uid] = {validation_type}
+    elif (this_uid in validated_uids and
+          validation_type in validated_uids[this_uid]):
+        validated_uids[this_uid].discard(validation_type)
 
-    UID_s = ', '.join(uids)
+    lines = [line.strip() for line in str_lines if line.strip()]
 
-    if UID_s:
-        lines += [f"{template}: {UID_s}"]
+    for uid in validated_uids:
+        validations = ', '.join(sorted(validated_uids[uid]))
+        lines.append(f"{uid}: {validations}")
 
     _logger.debug(f"Set plan.Comments to {lines}")
 
