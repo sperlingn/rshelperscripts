@@ -72,6 +72,11 @@ class MB_Result(IntEnum):
     OK = 1
     Yes = 6
 
+    def __bool__(self):
+        # Only return True for OK and Yes results.  Otherwise consider it a
+        # No/False/Cancel result for bool check.
+        return self in (MB_Result.OK, MB_Result.Yes)
+
 
 class MB_Options(IntEnum):
     DefaultDesktopOnly = 131072
@@ -81,39 +86,44 @@ class MB_Options(IntEnum):
     ServiceNotification = 2097152
 
 
+def _Show_MB(*args, ontop=False):
+    opt = MB_Options.DefaultDesktopOnly if ontop else MB_Options.None_
+    res = _MessageBox.Show(*args, opt)
+    try:
+        return MB_Result(res)
+    except ValueError:
+        # New return type, just return it and log so we can add it later.
+        _logger.warning(f'Unexpected message box result: {res}')
+        return res
+
+
 def Show_OK(message, caption, ontop=False, icon=MB_Icon.None_,
             defaultResult=MB_Result.None_):
     button = MB_Button.OK
-    opt = MB_Options.DefaultDesktopOnly if ontop else MB_Options.None_
-    return _MessageBox.Show(message, caption, button, icon, defaultResult, opt)
+    return _Show_MB(message, caption, button, icon, defaultResult, ontop=ontop)
 
 
 def Show_OKCancel(message, caption, ontop=False, icon=MB_Icon.None_,
                   defaultResult=MB_Result.None_):
     button = MB_Button.OKCancel
-    opt = MB_Options.DefaultDesktopOnly if ontop else MB_Options.None_
-    return _MessageBox.Show(message, caption, button, icon, defaultResult, opt)
+    return _Show_MB(message, caption, button, icon, defaultResult, ontop=ontop)
 
 
 def Show_YesNo(message, caption, ontop=False, icon=MB_Icon.None_,
                defaultResult=MB_Result.None_):
     button = MB_Button.YesNo
-    opt = MB_Options.DefaultDesktopOnly if ontop else MB_Options.None_
-    return _MessageBox.Show(message, caption, button, icon, defaultResult, opt)
+    return _Show_MB(message, caption, button, icon, defaultResult, ontop=ontop)
 
 
 def Show_YesNoCancel(message, caption, ontop=False, icon=MB_Icon.None_,
                      defaultResult=MB_Result.None_):
     button = MB_Button.YesNoCancel
-    opt = MB_Options.DefaultDesktopOnly if ontop else MB_Options.None_
-    return _MessageBox.Show(message, caption, button, icon, defaultResult, opt)
+    return _Show_MB(message, caption, button, icon, defaultResult, ontop=ontop)
 
 
 def _await_user_input_mb(message):
-    _logger.debug("Waited for user input: '{}'".format(message))
-    return _MessageBox.Show("{}".format(message), "Awaiting Input",
-                            # Always on top = 131072
-                            1, 0, 0, 131072)
+    _logger.debug(f'Waited for user input: "{message}"')
+    return Show_OK(f'{message}', "Awaiting Input", ontop=True)
 
 
 try:
@@ -134,10 +144,13 @@ except ImportError:
 
 try:
     from connect import (get_current, CompositeAction as _CompositeActionOrig,
-                         await_user_input as _await_user_input)
+                         await_user_input as _await_user_input, set_progress)
+
+    IN_RAYSTATION = True
 
 except ImportError:
     # Replacement functions when not running in RS
+    IN_RAYSTATION = False
 
     def get_current(name):
         # TODO: Might want to return a sample object that has reasonable
@@ -148,6 +161,9 @@ except ImportError:
         pass
 
     _await_user_input = _await_user_input_mb
+
+    def set_progress(message, percent):
+        _logger.info(f"Progress: {message} ({percent:.0%})")
 
 finally:
 
