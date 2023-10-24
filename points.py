@@ -15,12 +15,15 @@ def floatable_attr(obj, attrname):
 
 class point(dict):
     _COORDS = ['x', 'y', 'z']
+    _precision = 2
 
-    def __init__(self, x=None, y=None, z=None):
+    def __init__(self, x=None, y=None, z=None, precision=2):
         super(point, self).__init__(self)
 
         for coord in self._COORDS:
             self[coord] = 0
+
+        self._precision = precision
 
         try:
             if isinstance(x, dict):
@@ -43,6 +46,8 @@ class point(dict):
             self.update({'x': x if x else 0,
                          'y': y if y else 0,
                          'z': z if z else 0})
+
+        self.__changed__()
 
     @classmethod
     def __contains__(cls, key):
@@ -82,6 +87,7 @@ class point(dict):
     @x.setter
     def x(self, value):
         self['x'] = value
+        self.__changed__()
 
     @property
     def y(self):
@@ -90,6 +96,7 @@ class point(dict):
     @y.setter
     def y(self, value):
         self['y'] = value
+        self.__changed__()
 
     @property
     def z(self):
@@ -98,6 +105,7 @@ class point(dict):
     @z.setter
     def z(self, value):
         self['z'] = value
+        self.__changed__()
 
     @property
     def to_tup(self):
@@ -113,6 +121,14 @@ class point(dict):
     @property
     def normalized(self):
         return self/self.magnitude
+
+    def _round(self):
+        if self._precision:
+            for c in self._COORDS:
+                self[c] = round(self[c], self._precision)
+
+    def __changed__(self):
+        self._round()
 
     def __add__(self, other):
         if self.__ispointlike__(other):
@@ -176,6 +192,7 @@ class point(dict):
         new = self + other
         for key in new:
             self[key] = new[key]
+        self.__changed__()
         return self
 
     def __isub__(self, other):
@@ -185,6 +202,7 @@ class point(dict):
         new = self * other
         for key in new:
             self[key] = new[key]
+        self.__changed__()
         return self
 
     def __idiv__(self, other):
