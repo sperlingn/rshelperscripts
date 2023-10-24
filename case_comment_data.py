@@ -20,6 +20,10 @@ def filter_lines(lines, re=UID_RE):
 
 
 def set_validation_comment(plan, beam_set, validation_type, status=True):
+    if not beam_set.ModificationInfo or not beam_set.ModificationInfo.DicomUID:
+        raise ValueError("Cannot set validation comment,"
+                         " plan is not yet saved.")
+
     try:
         existing = plan.Comments.split('\n')
     except (TypeError, AttributeError):
@@ -42,8 +46,7 @@ def set_validation_comment(plan, beam_set, validation_type, status=True):
     for uid in set(validated_uids) - plan_uids:
         del validated_uids[uid]
 
-    this_uid = (beam_set.ModificationInfo.DicomUID if beam_set.ModificationInfo
-                else f'{beam_set.DicomPlanLabel}')
+    this_uid = beam_set.ModificationInfo.DicomUID
 
     if status:
         try:
