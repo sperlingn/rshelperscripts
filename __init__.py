@@ -13,6 +13,7 @@ from .external import *           # noqa: W611
 from .roi import *                # noqa: W401, W611
 from .clinicalgoals import *      # noqa: W401, W611
 from .validations import *        # noqa: W401, W611
+from .plans import *              # noqa: W401, W611
 
 del logging                       # noqa: E602
 
