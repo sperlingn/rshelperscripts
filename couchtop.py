@@ -4,24 +4,14 @@ from ast import literal_eval
 from struct import unpack_from
 from inspect import getargspec
 
-try:
-    from System import ArgumentOutOfRangeException
-    from System.Windows import MessageBox as _MessageBox
-except ImportError:
-    ArgumentOutOfRangeException = IndexError
-
-    class _MessageBox:
-        def Show(*args, **kwargs):
-            _logger.info("MessageBox: args={}, kwargs={}", args, kwargs)
-            return True
-
 from .points import (point, BoundingBox, CT_Image_Stack, AffineMatrix)
 from .rsdicomread import read_dataset
 from .case_comment_data import (get_case_comment_data, set_case_comment_data,
                                 get_data)
 from .dosetools import invalidate_structureset_doses
 
-from .external import get_current, CompositeAction
+from .external import (get_current, CompositeAction, Show_YesNo,
+                       ArgumentOutOfRangeException)
 
 from .roi import ROI_Builder, ROI
 
@@ -254,12 +244,8 @@ def test_for_hn(icase, img_stack):
         msg = ("Couldn't determine if this is a H&N patient from site '{}'\n"
                "Should this be an H&N patient?").format(icase.BodySite)
         title = "H&N Board in use?"
-        buttons = 4     # Yes/No
-        icon = 32       # Question?
-
-        # System.Forms.DialogResult.Yes == 6
-        isHN = _MessageBox.Show(msg, title, buttons, icon) == 6
-        return isHN
+        isHN = Show_YesNo(msg, title, ontop=True)
+        return bool(isHN)
 
         _logger.warning("Testing for H&N board by searching image is not "
                         f"implemented yet.  Treatment Site {icase.BodySite} "
@@ -848,11 +834,15 @@ class CouchTop(object):
 
         self._apply_transform(structure_set, transform)
 
-    def remove_from_case(self):
-        with CompositeAction("Remove {} couch from case.".format(self.Name)):
-            if self.roi_geometries:
+    def remove_from_case(self, remove_existing=True):
+        if self.roi_geometries:
+            with CompositeAction("Remove {self.Name} couch from case."):
                 for geom in self.roi_geometries.values():
-                    geom.OfRoi.DeleteRoi()
+                    if geom.PrimaryShape:
+                        if remove_existing:
+                            geom.DeleteGeometry()
+                        else:
+                            geom.OfRoi.DeleteRoi()
 
     def machine_matches(self, inmachinename):
         inmachines = self.machine_set(inmachinename)
@@ -985,7 +975,8 @@ class CouchTopCollection(object):
 
 
 def addcouchtoexam(icase, examination=None, plan=None,
-                   patient_db=get_current("PatientDB"), **kwargs):
+                   patient_db=get_current("PatientDB"), remove_existing=False,
+                   **kwargs):
 
     if not examination:
         examination = icase.PatientModel.Examinations[0]
@@ -998,12 +989,12 @@ def addcouchtoexam(icase, examination=None, plan=None,
     existing_tops = tops.get_tops_in_structure_set(structure_set)
 
     # Remove all existing tops.
-    if existing_tops:
+    if existing_tops and remove_existing:
         with CompositeAction("Remove Existing Tops"):
             invalidate_structureset_doses(icase=icase,
                                           structure_set=structure_set)
             while existing_tops:
-                existing_tops.pop().remove_from_case()
+                existing_tops.pop().remove_from_case(remove_existing)
 
     if 'couch_y' in kwargs:
         top_height = kwargs['couch_y']
