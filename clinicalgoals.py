@@ -19,9 +19,13 @@ _MINUSES = [m + s + 'TV' for m in ['-', ' - '] for s in 'PCG']
 
 
 def params_from_fn(fn):
-    return {key: getattr(fn.PlanningGoal, _PARAM_MAPPING[key])
-            for key in _PARAM_MAPPING
-            if _rs_hasattr(fn.PlanningGoal, _PARAM_MAPPING[key])}
+    params = {key: getattr(fn.PlanningGoal, _PARAM_MAPPING[key])
+              for key in _PARAM_MAPPING
+              if _rs_hasattr(fn.PlanningGoal, _PARAM_MAPPING[key])}
+
+    params['RoiName'] = fn.ForRegionOfInterest.Name
+
+    return params
 
 
 def get_minuses(structure_set):
@@ -57,3 +61,21 @@ def add_minus_goals(plan):
                 for roi_minus_name in rois_to_minuses_map[roi_name]:
                     fnparams['RoiName'] = roi_minus_name
                     eval_setup.AddClinicalGoal(**fnparams)
+
+
+def copy_clinical_goal(goal_in, evalsetup_out):
+    fnparams = params_from_fn(goal_in)
+    evalsetup_out.AddClinicalGoal(**fnparams)
+
+
+def copy_clinical_goals(plan_in, plan_out):
+    evalsetup_in = plan_in.TreatmentCourse.EvaluationSetup
+    evalsetup_out = plan_out.TreatmentCourse.EvaluationSetup
+
+    # Clear plan_out clinical goals
+    existing_goals = [fn for fn in evalsetup_out.EvaluationFunctions]
+    for fn in existing_goals:
+        evalsetup_out.DeleteClinicalGoal(FunctionToRemove=fn)
+
+    for fn in evalsetup_in.EvaluationFunctions:
+        copy_clinical_goal(fn, evalsetup_out)
