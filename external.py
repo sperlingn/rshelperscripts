@@ -14,6 +14,8 @@ def helperoverride(function):
 
 try:
     from System.Windows import MessageBox as _MessageBox
+    from System.Windows.Controls import Button
+    from System import ArgumentOutOfRangeException
 except ImportError:
 
     # TODO: Work to include a QT or other based dialog? Right now we can assume
@@ -24,6 +26,15 @@ except ImportError:
         def Show(*args, **kwargs):
             _logger.info("MessageBox: args={}, kwargs={}", args, kwargs)
             return True
+
+    @helperoverride
+    class ArgumentOutOfRangeException(IndexError):
+        pass
+
+    @helperoverride
+    class Button:
+        def __init__(self, *args, **kwargs):
+            raise NotImplementedError("Only supported for CLR launch.")
 
 
 class _CompositeActionDummy():
@@ -216,7 +227,7 @@ finally:
             _await_user_input(msg)
 
 try:
-    from pydicom import dcmread
+    from pydicom import dcmread, uid
 except ImportError:
     # If we don't have pydicom in this env, can't do any of this. Just return a
     # dummy function that returns none.
@@ -224,12 +235,29 @@ except ImportError:
     def dcmread(*args, **kwargs):
         return None
 
+    @helperoverride
+    class uid:
+        def generate_uid(self, prefix=None, entropy_sources=[]):
+            raise NotImplementedError(self.__name__)
+
 
 def rs_hasattr(obj, attrname):
     try:
+        if '.' in attrname:
+            # Composite attribute, nest.
+            firstattr, rest = attrname.split('.', 1)
+            return rs_hasattr(rs_getattr(obj, firstattr), rest)
         return hasattr(obj, attrname)
     except (KeyError, ValueError, IndexError, TypeError):
         return False
+
+
+def rs_getattr(obj, attrname):
+    if rs_hasattr(obj, attrname) and '.' in attrname:
+        # Composite attribute, nest.
+        firstattr, rest = attrname.split('.', 1)
+        return rs_getattr(getattr(obj, firstattr), rest)
+    return getattr(obj, attrname)
 
 
 def rs_callable(obj, attrname):
@@ -253,5 +281,85 @@ def set_module_opt(opt_name, value):
 def set_module_opts(**kwargs):
     for opt, val in kwargs.items():
         set_module_opt(opt, val)
+
+
+class PlanSelectorDialog(RayWindow):
+    _XAML = """
+<Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+        xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+        xmlns:System="clr-namespace:System;assembly=mscorlib"
+        Title="Select Plan"
+        SizeToContent="WidthAndHeight"
+        Foreground="#FF832F2F"
+        Topmost="True"
+        WindowStartupLocation="CenterOwner"
+        ResizeMode="NoResize"
+        WindowStyle="ThreeDBorderWindow" MinWidth="192"
+        FontSize="24">
+
+    <Window.Resources>
+        <Style TargetType="{x:Type StackPanel}">
+            <Setter Property="Margin" Value="5"/>
+        </Style>
+        <Style TargetType="{x:Type Button}">
+            <Setter Property="Margin" Value="5"/>
+            <Setter Property="Padding" Value="5"/>
+        </Style>
+    </Window.Resources>
+    <Window.TaskbarItemInfo>
+        <TaskbarItemInfo ProgressState="Normal" ProgressValue="50"/>
+    </Window.TaskbarItemInfo>
+
+    <StackPanel Background="#FFE6E6E6" MinHeight="20" Margin="0">
+        <Label Content="Select a plan:"/>
+        <StackPanel x:Name="PlanPanel">
+            <Button x:Name="ButtonList" Content="PlanName" />
+        </StackPanel>
+    </StackPanel>
+</Window>
+    """
+    PlanPanel = None  # StackPanel
+    _results = None  # dict for results
+    _plans = None  # list of plans
+
+    def __init__(self, plans, results):
+        self.LoadComponent(self._XAML)
+
+        self.PlanPanel.Children.Clear()
+
+        self._plans = {plan.Name: plan for plan in plans}
+
+        for plan in plans:
+            plan_button = Button()
+            plan_button.Content = f"{plan.Name}"
+            plan_button.Click += self.Plan_Click
+            self.PlanPanel.Children.Add(plan_button)
+
+        self._results = results
+
+    def Plan_Click(self, caller, event):
+        self._results['Plan'] = self._plans[caller.Content]
+        self.DialogResult = True
+        self.Close()
+
+
+def pick_plan(plans):
+    results = {}
+    dlg = PlanSelectorDialog(plans, results)
+    try:
+        res = dlg.ShowDialog()
+
+        if not res:
+            raise Warning("Closed with cancel")
+
+    except Warning:
+        _logger.warning("Dialog failed to run correctly.", exc_info=True)
+
+    if 'Plan' in results:
+        return results['Plan']
+    else:
+        return None
 
 # __all__ = [dcmread, CompositeAction, get_current]
