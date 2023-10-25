@@ -15,7 +15,7 @@ def helperoverride(function):
 try:
     from System.Windows import MessageBox as _MessageBox
     from System.Windows.Controls import Button
-    from System import ArgumentOutOfRangeException
+    from System import ArgumentOutOfRangeException, InvalidOperationException
     from System.IO import InvalidDataException
 except ImportError:
 
@@ -30,6 +30,10 @@ except ImportError:
 
     @helperoverride
     class ArgumentOutOfRangeException(IndexError):
+        pass
+
+    @helperoverride
+    class InvalidOperationException(Exception):
         pass
 
     @helperoverride
@@ -187,35 +191,93 @@ finally:
     class CompositeAction:
         _clsinstance = None
         _instance = None
+        _blocked = False
+        my_args = None
+        _dummyclass = _CompositeActionDummy
+        _realclass = _CompositeActionOrig
 
         def __init__(self, *args, **kwargs):
-            if type(self)._clsinstance:
-                self._instance = _CompositeActionDummy(*args, **kwargs)
+            cls = type(self)
+            self.my_args = (args, kwargs)
+            if cls._clsinstance or cls._blocked:
+                self._instance = cls._dummyclass(*args, **kwargs)
             else:
-                self._instance = _CompositeActionOrig(*args, **kwargs)
-                type(self)._clsinstance = self._instance
+                self._instance = cls._realclass(*args, **kwargs)
+                cls._clsinstance = self
 
         def __enter__(self):
-            return self._instance.__enter__()
+            self._instance.__enter__()
+            return None
 
         def __exit__(self, e_type, e, e_traceback):
+            cls = type(self)
             if e_type is not None:
                 _logger.exception(str(e))
 
-            if self._instance == type(self)._clsinstance:
+            if self == cls._clsinstance and not cls._blocked:
                 # We were the first launch of CompositeAction, we can now clear
                 # the class instance and let a new one start next time.
-                type(self)._clsinstance = None
+                cls._clsinstance = None
 
-            rv = type(self._instance).__exit__(self._instance,
-                                               e_type, e, e_traceback)
+            type(self._instance).__exit__(self._instance,
+                                          e_type, e, e_traceback)
 
             # FIXME:
             # Make sure that we don't reuse this object later (for now we can
             # only enter and exit once...with more logic this could be fixed.
             self._instance = None
 
-            return rv
+            return None
+
+    class SuspendCompositeAction:
+        _clsinstance = None
+        _CompositeActionClass = CompositeAction
+        active_action_args = None
+        message = "Suspending composite action"
+
+        def __init__(self, reason=None):
+            if not type(self)._clsinstance:
+                # First time being used.
+                type(self)._clsinstance = self
+
+            if reason:
+                self.message = f"{self.message}: ({reason})"
+
+        def __enter__(self):
+            ca_class = type(self)._CompositeActionClass
+            ca_class._blocked = True
+            if ca_class._clsinstance:
+                # Currently in a CompositeAction, suspend it.
+                _logger.info(f"{self.message}")
+                active_ca_wrapper = ca_class._clsinstance
+                self.active_ca_wrapper = active_ca_wrapper
+                active_ca_wrapper.__exit__(None, None, None)
+
+            return None
+
+        def __exit__(self, e_type, e, e_traceback):
+            cls = type(self)
+            if e_type is not None:
+                _logger.exception(str(e))
+
+            if self == cls._clsinstance:
+                # We were the first launch of SuspendCompositeAction, we can
+                # now clear the class instance and let a new one start.
+                cls._clsinstance = None
+
+                # Unblock CompositeAction from being created.
+                ca_class = cls._CompositeActionClass
+                ca_class._blocked = False
+
+                if self.active_ca_wrapper:
+                    # There was a running CompositeAction when we halted, start
+                    # it again with the same arguments
+                    ca_act = self.active_ca_wrapper
+                    args, kwargs = ca_act.my_args
+                    ca_act._instance = ca_class._realclass(*args, **kwargs)
+                    ca_act._instance.__enter__()
+
+            return None
 
     @helperoverride
     def await_user_input(msg):

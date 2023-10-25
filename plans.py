@@ -3,7 +3,9 @@ from .clinicalgoals import copy_clinical_goals
 from .external import (CompositeAction as _CompositeAction,
                        rs_getattr as _rs_getattr,
                        rs_hasattr as _rs_hasattr,
-                       obj_name as _obj_name)
+                       rs_callable as _rs_callable,
+                       obj_name as _obj_name,
+                       InvalidOperationException)
 from .examinations import duplicate_exam as _duplicate_exam
 # from .points import point as _point
 
@@ -227,6 +229,14 @@ _OPTIMIZATION_FN_PARAM_EXCLUDE = {
     'OfTargetDoseGridRoi'
 }
 
+_OPTIMIZATION_PARAM_EXCLUDE = {
+}
+
+_OPTIMIZATION_PARAM_SUBOBJS = {
+    'Algorithm',
+    'DoseCalculation',
+    'DoseCalculation.OptimizationDoseAlgorithm'
+}
 
 _ARC_BEAM_OPT_PARAM_MAPPING = {
     'CreateDualArcs': cll.is_dual_arcs,
@@ -414,12 +424,26 @@ def dup_object_param_values(obj_in, obj_out,
     else:
         top_includes = {inc for inc in includes if '.' not in inc}
 
-    params = {p for p in top_includes if p not in top_excludes}
+    # Any objects in top that are callble should be excluded
+    top_callables = {p for p in top_includes if _rs_callable(obj_out, p)}
+
+    # Any objects in top that are Script Collections or ScriptObjects should be
+    # excluded.
+    top_scriptitems = {p for p in top_includes
+                       if 'Script' in str(type(_rs_getattr(obj_out, p)))}
+
+    valid_top_params = (top_includes - top_callables) - top_scriptitems
+
+    params = valid_top_params - top_excludes
     for param in params:
         value = _rs_getattr(obj_in, param)
-        setattr(obj_out, param, value)
-        _logger.debug(f'{"":->{_depth}s}{"":>>{_depth>0:d}s}Set'
-                      f' {param}={value} on {obj_out}')
+        try:
+            setattr(obj_out, param, value)
+            _logger.debug(f'{"":->{_depth}s}{"":>>{_depth>0:d}s}'
+                          f'Set {param}={value} on {obj_out}')
+        except InvalidOperationException:
+            _logger.debug(f'{"":->{_depth}s}{"":>>{_depth>0:d}s}'
+                          f'Failed to set {param}={value} on {obj_out}')
 
     # Loop through objects to be copied
     for sub_obj in sub_o_root_set:
@@ -471,32 +495,38 @@ def copy_plan_to_exam(icase, plan_in, exam_out):
     plan_params['PlanName'] = plan_out_name
     with _CompositeAction("Create duplicate plan {plan_out_name}"):
         # First create an empty plan on the new exam.
-        icase.AddNewPlan(**plan_params)
-        copy_plan_to_plan(plan_in, icase.TreatmentPlans[plan_out_name])
+        _logger.debug(f"Add new plan with {plan_params=}")
+        plan_out = icase.AddNewPlan(**plan_params)
+        copy_plan_to_plan(plan_in, plan_out, exam_out)
 
     return icase.TreatmentPlans[plan_out_name]
 
 
-def copy_plan_to_plan(plan_in, plan_out):
+def copy_plan_to_plan(plan_in, plan_out, exam_out=None):
+
+    tempbs = None
     if len(plan_out.BeamSets) > 1:
         raise NotImplementedError("Only supports copying into empty plan")
 
-    tempbs = plan_out.BeamSets[0]
-    tempname = get_unique_name('TEMP_BS', plan_out.BeamSets)
-    tempbs.DicomPlanLabel = tempname
+    elif len(plan_out.BeamSets) == 1:
+        # We have a placeholder beamset, prepare it.
+        tempbs = plan_out.BeamSets[0]
+        tempname = get_unique_name('TEMP_BS', plan_out.BeamSets)
+        tempbs.DicomPlanLabel = tempname
 
-    destination_exam = tempbs.GetPlanningExamination()
+        exam_out = exam_out if exam_out else tempbs.GetPlanningExamination()
 
-    # Purge the tempbs of beams to fix isocenter crash.
-    tempbs.ClearBeams(RemoveBeams=True,
-                      ClearBeamModifiers=True,
-                      BeamNames=None)
+        # Purge the tempbs of beams to fix isocenter crash.
+        tempbs.ClearBeams(RemoveBeams=True,
+                          ClearBeamModifiers=True,
+                          BeamNames=None)
 
     for bs in plan_in.BeamSets:
-        copy_bs(plan_in, bs, plan_out, destination_exam.Name)
+        copy_bs(plan_in, bs, plan_out, exam_out.Name)
 
     # Done with the placeholder beamset.
-    tempbs.DeleteBeamSet()
+    if tempbs:
+        tempbs.DeleteBeamSet()
 
     copy_clinical_goals(plan_in, plan_out)
 
@@ -816,6 +846,10 @@ def copy_opt_parameters(optparam_in, optparam_out):
     # Copy TreatmentSetupSettings
     for tss_name, tss_out in tss_dict_out.items():
         copy_opt_tss(tss_dict_in[tss_name], tss_out)
+
+    dup_object_param_values(optparam_in, optparam_out,
+                            excludes=_OPTIMIZATION_PARAM_EXCLUDE,
+                            sub_objs=_OPTIMIZATION_PARAM_SUBOBJS)
 
 
 def copy_opt_tss(tss_in, tss_out):

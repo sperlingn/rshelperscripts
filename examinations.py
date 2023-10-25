@@ -1,5 +1,5 @@
-from .external import dcmread, uid, await_user_input
-from .points import AffineIdentity
+from .external import dcmread, uid, await_user_input, SuspendCompositeAction
+# from .points import AffineIdentity
 
 import tempfile
 
@@ -94,7 +94,8 @@ def duplicate_exam(patient, icase, exam_in, copy_structs=True):
         import_params['SeriesOrInstances'].append(series_info)
         import_params['CaseName'] = icase.CaseName
         _logger.debug(f"{import_params=}")
-        warnings = patient.ImportDataFromPath(**import_params)
+        with SuspendCompositeAction("Importing Dicom data"):
+            warnings = patient.ImportDataFromPath(**import_params)
         if warnings:
             _logger.warning(f'Import warnings: {warnings}')
 
