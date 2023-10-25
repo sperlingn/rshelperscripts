@@ -2,12 +2,17 @@ import logging
 from .clinicalgoals import copy_clinical_goals
 from .external import (CompositeAction as _CompositeAction,
                        rs_getattr as _rs_getattr,
-                       rs_hasattr as _rs_hasattr)
+                       rs_hasattr as _rs_hasattr,
+                       obj_name as _obj_name)
+from .examinations import duplicate_exam as _duplicate_exam
 # from .points import point as _point
 
 import copy
 
 _logger = logging.getLogger(__name__)
+
+
+DUP_MAX_RECURSE = 10
 
 
 class CallLaterList():
@@ -39,6 +44,18 @@ class CallLater():
 
 
 cll = CallLaterList()
+
+_PLAN_PARAM_MAPPING = {
+    'PlannedBy': True,
+    'Comment': True
+}
+
+_PLAN_PARAM_DEFAULT = {
+    'PlanName': None,
+    'ExaminationName': None,
+    'IsMedicalOncologyPlan': False,
+    'AllowDuplicateNames': False
+}
 
 _BS_PARAM_MAPPING = {
     'Name': 'DicomPlanLabel',
@@ -308,6 +325,26 @@ def get_opt_fn_type(opt_fn):
     return fntype
 
 
+def get_unique_name(obj, container):
+    if isinstance(container, set):
+        limiting_set = container
+    elif _rs_hasattr(container, 'Keys'):
+        limiting_set = set(container.Keys)
+    else:
+        try:
+            limiting_set = set(map(_obj_name, container))
+        except (ValueError, AttributeError):
+            limiting_set = set(container)
+
+    o_name = f'{obj}'
+    n = 0
+    while o_name in limiting_set:
+        o_name = f'{obj} ({n})'
+        n += 1
+
+    return o_name
+
+
 def params_from_beamset(beamset, examination_name=None):
 
     # Fill with easily obtainable values first.
@@ -331,29 +368,113 @@ def params_from_dosegrid(dosegrid):
 
 
 def dup_object_param_values(obj_in, obj_out,
-                            includes=None, excludes=[], sub_objs=[]):
-    params = {p for p in (includes if includes else dir(obj_out))
-              if p not in excludes and p not in sub_objs}
+                            includes=None, excludes=[], sub_objs=[], _depth=0):
+    if _depth > DUP_MAX_RECURSE:
+        raise RecursionError(f"{__name__} too deep ({_depth} layers),"
+                             " this may be a self referential object.")
+
+    sub_obj_depth = max([s.count('.') for s in sub_objs] + [0])
+    if sub_obj_depth > DUP_MAX_RECURSE:
+        raise ValueError(f"Subobjects too deep ({sub_obj_depth} > "
+                         f"{DUP_MAX_RECURSE}): {sub_objs=}")
+
+    # TODO: Consider exclududing any objects which are PyScriptObjects unless
+    # explicitly included.
+
+    # Get the list of sub_objects we might be acting on.
+    sub_o_set = {sub_o for sub_o in sub_objs if _rs_hasattr(obj_out, sub_o)}
+
+    # Objects to act on directly, copying everything in them.
+    sub_o_root_set = {sub_o for sub_o in sub_o_set if '.' not in sub_o}
+
+    # Objects who have a deep component to be acted on later in the recursed
+    # dup_obj_param_values call.
+    sub_o_deep_set = {sub_o for sub_o in sub_o_set if '.' in sub_o}
+    sub_o_deep_root_set = {sub_o.split('.', 1)[0] for sub_o in sub_o_deep_set}
+
+    # All roots, including shallow, shallow+deep, and deep only
+    sub_o_all_root_set = sub_o_root_set | sub_o_deep_root_set
+
+    # Mapping of sub_objs to pass to later dup_obj_param_values calls.
+    sub_o_deep_set_map = {o_root: {sub_sub_o.split('.', 1)[1] for sub_sub_o
+                                   in sub_o_deep_set
+                                   if sub_sub_o.split('.', 1)[0] == o_root}
+                          for o_root in sub_o_all_root_set}
+
+    # Objects with deep sets but no root set to copy (Handle differently from
+    # the normal objects
+    sub_o_deep_only_root_set = sub_o_deep_root_set - sub_o_root_set
+
+    # If passed a sub object with its own sub objects, assume that we cannot
+    # use it in the list of params to be copied alone.
+    top_excludes = sub_o_root_set | sub_o_deep_root_set | set(excludes)
+
+    if includes is None:
+        top_includes = set(dir(obj_out))
+    else:
+        top_includes = {inc for inc in includes if '.' not in inc}
+
+    params = {p for p in top_includes if p not in top_excludes}
     for param in params:
         value = _rs_getattr(obj_in, param)
         setattr(obj_out, param, value)
-        _logger.debug(f"Set {param}={value} on {obj_out}")
+        _logger.debug(f'{"":->{_depth}s}{"":>>{_depth>0:d}s}Set'
+                      f' {param}={value} on {obj_out}')
 
-    sub_o_set = {sub_o for sub_o in sub_objs if _rs_hasattr(obj_out, sub_o)}
-    sub_sub_o_map = {sub_o.split('.', 1)[0]: {sub_sub_o.split('.', 1)[1] for sub_sub_o
-                             in sub_objs if '.' in sub_sub_o and sub_o.split('.', 1)[0] == sub_sub_o.split('.', 1)[0]
-                             and _rs_hasattr(obj_out, sub_sub_o)}
-                     for sub_o in sub_objs
-                     if '.' in sub_o and sub_o.split('.', 1)[0] in sub_o_set}
+    # Loop through objects to be copied
+    for sub_obj in sub_o_root_set:
+        sub_in = _rs_getattr(obj_in, sub_obj)
+        sub_out = _rs_getattr(obj_out, sub_obj)
 
-    for sub_obj in sub_o_set:
-        sub_excludes = [exc.split('.', 1)[1] for exc in excludes
-                        if '.' in exc and sub_obj == exc.split('.', 1)[0]]
-        sub_sub_objs = {}
-        dup_object_param_values(_rs_getattr(obj_in, sub_obj),
-                                _rs_getattr(obj_out, sub_obj),
+        # Explicitly requested objects to copy.
+        sub_sub_objs = sub_o_deep_set_map[sub_obj]  # This may be an empty set
+
+        # Exclude anything already excluded in the dot notation
+        sub_excludes = {exc.split('.', 1)[1] for exc in excludes
+                        if '.' in exc and sub_obj == exc.split('.', 1)[0]}
+
+        sub_includes = None
+        if includes:
+            sub_includes = {inc.split('.', 1)[1] for inc in includes
+                            if '.' in inc and inc.split('.', 1)[0] == sub_obj}
+
+        if not sub_includes and sub_obj not in sub_o_deep_only_root_set:
+            sub_includes = None
+
+        # Add excludes for all objects in root that are not in the sub_sub_objs
+        # list if this is a member of the sub_o_deep_only_root_set.
+        dup_object_param_values(sub_in,
+                                sub_out,
+                                includes=sub_includes,
                                 excludes=sub_excludes,
-                                sub_objs=sub_sub_objs)
+                                sub_objs=sub_sub_objs,
+                                _depth=_depth+1)
+    return None
+
+
+def copy_plan_to_duplicate_exam(patient, icase, plan_in):
+    exam_in = plan_in.BeamSets[0].GetPlanningExamination()
+    exam_out = _duplicate_exam(patient, icase, exam_in)
+
+    return copy_plan_to_exam(icase, plan_in, exam_out)
+
+
+def copy_plan_to_exam(icase, plan_in, exam_out):
+    plan_params = param_from_mapping(plan_in, _PLAN_PARAM_MAPPING,
+                                     _PLAN_PARAM_DEFAULT)
+
+    plan_out_name = get_unique_name(f'{plan_in.Name} (dup)',
+                                    icase.TreatmentPlans)
+
+    plan_params['ExaminationName'] = exam_out.Name
+
+    plan_params['PlanName'] = plan_out_name
+    with _CompositeAction("Create duplicate plan {plan_out_name}"):
+        # First create an empty plan on the new exam.
+        icase.AddNewPlan(**plan_params)
+        copy_plan_to_plan(plan_in, icase.TreatmentPlans[plan_out_name])
+
+    return icase.TreatmentPlans[plan_out_name]
 
 
 def copy_plan_to_plan(plan_in, plan_out):
@@ -361,9 +482,7 @@ def copy_plan_to_plan(plan_in, plan_out):
         raise NotImplementedError("Only supports copying into empty plan")
 
     tempbs = plan_out.BeamSets[0]
-    tempname = 'TEMP_BS'
-    while tempname in plan_in.BeamSets.Keys:
-        tempname += '_'
+    tempname = get_unique_name('TEMP_BS', plan_out.BeamSets)
     tempbs.DicomPlanLabel = tempname
 
     destination_exam = tempbs.GetPlanningExamination()
@@ -542,15 +661,15 @@ def copy_beams(plan_in, beamset_in, plan_out, beamset_out,
         del params['CreateFn']
 
         # Handle potential duplicate beams
-        while params['Name'] in beamset_out.Beams.Keys:
-            params['Name'] += '_'
+        params['Name'] = get_unique_name(params['Name'], beamset_out.Beams)
 
         iso_name = params['IsocenterData']['Name']
 
         if iso_name in existing_iso_set:
-            while iso_map.get(iso_name, iso_name) in existing_iso_set:
-                iso_map[iso_name] = iso_map.get(iso_name, iso_name)+'_'
-                _logger.debug(f"{iso_map=}, {iso_name=}")
+            if iso_name not in iso_map:
+                iso_map[iso_name] = get_unique_name(iso_name, existing_iso_set)
+
+            _logger.debug(f"{iso_map=}, {iso_name=}")
             params['IsocenterData']['Name'] = iso_map[iso_name]
             params['IsocenterData']['NameOfIsocenterToRef'] = iso_map[iso_name]
 
@@ -626,16 +745,19 @@ def copy_plan_optimizations(plan_in, plan_out):
         raise ValueError("Different number of optimization sets. "
                          "Cannot continue.")
 
-    for opt_in, opt_out in zip(plan_in.PlanOptimizations,
-                               plan_out.PlanOptimizations):
-        copy_optimizations(opt_in, opt_out)
+    with _CompositeAction("Copy Optimizations from "
+                          f"{plan_in.Name} to {plan_out.Name}"):
+        for opt_in, opt_out in zip(plan_in.PlanOptimizations,
+                                   plan_out.PlanOptimizations):
+            copy_optimizations(opt_in, opt_out)
 
 
 def copy_optimizations(opt_in, opt_out):
-    copy_opt_functions(opt_in, opt_out)
+    with _CompositeAction(f"Copy Optimizations from {opt_in} to {opt_out}"):
+        copy_opt_functions(opt_in, opt_out)
 
-    copy_opt_parameters(opt_in.OptimizationParameters,
-                        opt_out.OptimizationParameters)
+        copy_opt_parameters(opt_in.OptimizationParameters,
+                            opt_out.OptimizationParameters)
 
 
 def copy_opt_functions(opt_in, opt_out):
@@ -680,7 +802,7 @@ def copy_opt_functions(opt_in, opt_out):
         # to cause issues).
         dup_object_param_values(fn_in.DoseFunctionParameters,
                                 fn_out.DoseFunctionParameters,
-                                _OPTIMIZATION_FN_PARAM_EXCLUDE)
+                                excludes=_OPTIMIZATION_FN_PARAM_EXCLUDE)
 
 
 def copy_opt_parameters(optparam_in, optparam_out):

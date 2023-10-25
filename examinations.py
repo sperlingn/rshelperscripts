@@ -119,3 +119,5 @@ def duplicate_exam(patient, icase, exam_in, copy_structs=True):
             'TargetExaminationNamesToSkipAddedReg': [exam_out.Name]
         }
         icase.PatientModel.CopyRoiGeometries(**copy_params)
+
+    return exam_out

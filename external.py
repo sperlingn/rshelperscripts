@@ -16,6 +16,7 @@ try:
     from System.Windows import MessageBox as _MessageBox
     from System.Windows.Controls import Button
     from System import ArgumentOutOfRangeException
+    from System.IO import InvalidDataException
 except ImportError:
 
     # TODO: Work to include a QT or other based dialog? Right now we can assume
@@ -29,6 +30,10 @@ except ImportError:
 
     @helperoverride
     class ArgumentOutOfRangeException(IndexError):
+        pass
+
+    @helperoverride
+    class InvalidDataException(ValueError):
         pass
 
     @helperoverride
@@ -283,14 +288,14 @@ def set_module_opts(**kwargs):
         set_module_opt(opt, val)
 
 
-class PlanSelectorDialog(RayWindow):
+class ListSelectorDialog(RayWindow):
     _XAML = """
 <Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
         xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
         xmlns:System="clr-namespace:System;assembly=mscorlib"
-        Title="Select Plan"
+        Title="Select List"
         SizeToContent="WidthAndHeight"
         Foreground="#FF832F2F"
         Topmost="True"
@@ -306,6 +311,19 @@ class PlanSelectorDialog(RayWindow):
         <Style TargetType="{x:Type Button}">
             <Setter Property="Margin" Value="5"/>
             <Setter Property="Padding" Value="5"/>
+            <Style.Triggers>
+                <Trigger Property="Tag" Value="current">
+                    <Setter Property="BorderThickness" Value="3" />
+                    <Setter Property="BorderBrush">
+                        <Setter.Value>
+                            <RadialGradientBrush RadiusX="1" RadiusY="1">
+                                <GradientStop Color="#FF04B6D3" Offset="0.34"/>
+                                <GradientStop Color="White" Offset="1"/>
+                            </RadialGradientBrush>
+                        </Setter.Value>
+                    </Setter>
+                </Trigger>
+            </Style.Triggers>
         </Style>
     </Window.Resources>
     <Window.TaskbarItemInfo>
@@ -313,41 +331,69 @@ class PlanSelectorDialog(RayWindow):
     </Window.TaskbarItemInfo>
 
     <StackPanel Background="#FFE6E6E6" MinHeight="20" Margin="0">
-        <Label Content="Select a plan:"/>
-        <StackPanel x:Name="PlanPanel">
-            <Button x:Name="ButtonList" Content="PlanName" />
+        <Label x:Name="PickerLabel" Content="Select one:"/>
+        <StackPanel x:Name="ListPanel">
+            <Button x:Name="ButtonList" Content="ListName" />
         </StackPanel>
     </StackPanel>
 </Window>
     """
-    PlanPanel = None  # StackPanel
+    ListPanel = None  # StackPanel
     _results = None  # dict for results
-    _plans = None  # list of plans
+    _list_in = None  # list of list_in
 
-    def __init__(self, plans, results):
+    def __init__(self, list_in, results):
         self.LoadComponent(self._XAML)
 
-        self.PlanPanel.Children.Clear()
+        if 'description' in results:
+            self.PickerLabel.Content = results['description']
 
-        self._plans = {plan.Name: plan for plan in plans}
+        self.ListPanel.Children.Clear()
 
-        for plan in plans:
-            plan_button = Button()
-            plan_button.Content = f"{plan.Name}"
-            plan_button.Click += self.Plan_Click
-            self.PlanPanel.Children.Add(plan_button)
+        self._list_in = {obj_name(obj): obj for obj in list_in}
+
+        _logger.debug(f"{results=}")
+        for obj in self._list_in:
+            obj_button = Button()
+            _logger.debug(f"{obj=}")
+            if results.get('current', None) in [obj, self._list_in[obj]]:
+                _logger.debug(f"Found current {obj=}")
+                obj_button.Tag = 'current'
+            if results.get('default', None) in [obj, self._list_in[obj]]:
+                obj_button.IsDefault = True
+            obj_button.Content = f"{obj}"
+            obj_button.Click += self.List_Click
+            self.ListPanel.Children.Add(obj_button)
 
         self._results = results
 
-    def Plan_Click(self, caller, event):
-        self._results['Plan'] = self._plans[caller.Content]
-        self.DialogResult = True
-        self.Close()
+    def List_Click(self, caller, event):
+        try:
+            self._results['Selected'] = self._list_in[caller.Content]
+            self.DialogResult = True
+        finally:
+            self.Close()
 
 
-def pick_plan(plans):
-    results = {}
-    dlg = PlanSelectorDialog(plans, results)
+def obj_name(obj):
+    _NAMELIST = ['Name', 'DicomPlanLabel']
+    try:
+        return rs_getattr(obj, [attr for attr in _NAMELIST
+                                if rs_hasattr(obj, attr)][0])
+    except IndexError:
+        return str(obj)
+
+
+def pick_list(obj_list, description="Select One", current=None, default=None):
+    results = {'current': current,
+               'default': default,
+               'description': description}
+
+    # Don't bother with a dialog if there is only one choice.
+    if len(obj_list) == 1:
+        return next(iter(obj_list))
+
+    dlg = ListSelectorDialog(obj_list, results)
     try:
         res = dlg.ShowDialog()
 
@@ -357,9 +403,37 @@ def pick_plan(plans):
     except Warning:
         _logger.warning("Dialog failed to run correctly.", exc_info=True)
 
-    if 'Plan' in results:
-        return results['Plan']
+    if 'Selected' in results:
+        return results['Selected']
     else:
         return None
+
+
+def pick_exam(exams=None, include_current=True, default=None):
+    try:
+        current = obj_name(get_current("Examination"))
+    except InvalidDataException:
+        _logger.debug("No current examination selected.")
+        current = None
+
+    exams = exams if exams else [exam for exam in
+                                 get_current("Case").Examinations
+                                 if include_current
+                                 or obj_name(exam) != obj_name(current)]
+    return pick_list(exams, "Select Exam:", current=current, default=default)
+
+
+def pick_plan(plans=None, include_current=True, default=None):
+    try:
+        current = obj_name(get_current("Plan"))
+    except InvalidDataException:
+        _logger.debug("No current plan selected.")
+        current = None
+
+    plans = plans if plans else [plan for plan in
+                                 get_current("Case").TreatmentPlans
+                                 if include_current
+                                 or obj_name(plan) != obj_name(current)]
+    return pick_list(plans, "Select Plan:", current=current, default=default)
 
 # __all__ = [dcmread, CompositeAction, get_current]
