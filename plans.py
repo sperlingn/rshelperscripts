@@ -1,49 +1,14 @@
 import logging
 from .clinicalgoals import copy_clinical_goals
-from .external import (CompositeAction as _CompositeAction,
+from .external import (CompositeAction as _CompositeAction, ObjectDict,
+                       params_from_mapping,
                        rs_getattr as _rs_getattr,
                        rs_hasattr as _rs_hasattr,
-                       rs_callable as _rs_callable,
-                       obj_name as _obj_name,
-                       InvalidOperationException)
+                       dup_object_param_values, CallLaterList, get_unique_name)
 from .examinations import duplicate_exam as _duplicate_exam
 # from .points import point as _point
 
-import copy
-
 _logger = logging.getLogger(__name__)
-
-
-DUP_MAX_RECURSE = 10
-
-
-class CallLaterList():
-    _fn_list = {}  # Class level list
-
-    def _def_fn(self, *args, **kwargs):
-        raise NotImplementedError("Must be initialised first.")
-
-    def __getattr__(self, fn):
-        if fn not in self._fn_list:
-            self._fn_list[fn] = CallLater()
-        return self._fn_list[fn]
-
-    def __call__(self, fn):
-        fnname = fn.__name__
-        myfn = self.__getattr__(fnname)
-        myfn.set_fn(fn)
-        return myfn
-
-
-class CallLater():
-    _myfn = None
-
-    def __call__(self, *args, **kwargs):
-        return self._myfn(*args, **kwargs)
-
-    def set_fn(self, fn):
-        self._myfn = fn
-
 
 cll = CallLaterList()
 
@@ -235,7 +200,13 @@ _OPTIMIZATION_PARAM_EXCLUDE = {
 _OPTIMIZATION_PARAM_SUBOBJS = {
     'Algorithm',
     'DoseCalculation',
-    'DoseCalculation.OptimizationDoseAlgorithm'
+    'DoseCalculation.OptimizationDoseAlgorithm',
+    'DoseMimicParameters',
+    'FineTuneOptimizationSettings',
+    'RobustnessParameters.DensityUncertaintyParameters',
+    'RobustnessParameters.PatientGeometryUncertaintyParameters',
+    'RobustnessParameters.PositionUncertaintyParameters',
+    'RobustnessParameters.RobustComputationSettings',
 }
 
 _ARC_BEAM_OPT_PARAM_MAPPING = {
@@ -263,24 +234,6 @@ _DOSEGRID_PARAM_MAPPING = {
 }
 
 
-def param_from_mapping(obj, param_map, default_map=None):
-    if default_map:
-        params = copy.deepcopy(default_map)
-    else:
-        params = {}
-
-    map_p = {key: (param_map[key](obj) if callable(param_map[key])
-                   else (_rs_getattr(obj, key) if _rs_hasattr(obj, key) else
-                         _rs_getattr(obj, param_map[key])))
-             for key in param_map
-             if key and (callable(param_map[key])
-                         or _rs_hasattr(obj, param_map[key])
-                         or _rs_hasattr(obj, key))}
-
-    params.update(map_p)
-    return params
-
-
 @cll
 def get_technique_from_beamset(beamset):
     if beamset.PlanGenerationTechnique == 'Imrt':
@@ -306,7 +259,7 @@ def get_technique_from_beamset(beamset):
 @cll
 def get_iso_from_beam(beam):
     iso = beam.Isocenter
-    iso_params = param_from_mapping(iso, _ISOCENTER_PARAM_MAPPING)
+    iso_params = params_from_mapping(iso, _ISOCENTER_PARAM_MAPPING)
     return iso_params
 
 
@@ -321,46 +274,21 @@ def is_dual_arcs(arc_conv_settings):
 @cll
 def get_opt_fn_type(opt_fn):
     dfp = opt_fn.DoseFunctionParameters
-    fntype = None
     if _rs_hasattr(dfp, 'FunctionType'):
         _logger.debug(f"{opt_fn} had {dfp.FunctionType=}")
-        fntype = dfp.FunctionType
+        return dfp.FunctionType
     elif _rs_hasattr(dfp, 'PenaltyType'):
         _logger.debug(f"{opt_fn} had {dfp.PenaltyType=}, "
                       "FunctionType set to 'DoseFallOff'")
-        fntype = 'DoseFallOff'
+        return 'DoseFallOff'
     else:
-        _logger.error(f"{opt_fn} did not have FunctionType or PenaltyType.")
-
-    return fntype
-
-
-def get_unique_name(obj, container):
-    if isinstance(container, set):
-        limiting_set = container
-    elif _rs_hasattr(container, 'Keys'):
-        limiting_set = set(container.Keys)
-    else:
-        try:
-            limiting_set = set(map(_obj_name, container))
-        except (ValueError, AttributeError):
-            limiting_set = set(container)
-
-    o_name = f'{obj}'
-    n = 0
-    while o_name in limiting_set:
-        o_name = f'{obj} ({n})'
-        n += 1
-
-    return o_name
+        raise Warning(f"{opt_fn} did not have FunctionType or PenaltyType.")
 
 
 def params_from_beamset(beamset, examination_name=None):
 
     # Fill with easily obtainable values first.
-    params = param_from_mapping(beamset, _BS_PARAM_MAPPING, _BS_PARAM_DEFAULT)
-
-    params['TreatmentTechnique'] = get_technique_from_beamset(beamset)
+    params = params_from_mapping(beamset, _BS_PARAM_MAPPING, _BS_PARAM_DEFAULT)
 
     for dsp in beamset.DoseSpecificationPoints:
         params['NewDoseSpecificationPointNames'].append(dsp.Name)
@@ -373,107 +301,62 @@ def params_from_beamset(beamset, examination_name=None):
 
 
 def params_from_dosegrid(dosegrid):
-    params = param_from_mapping(dosegrid, _DOSEGRID_PARAM_MAPPING)
+    return params_from_mapping(dosegrid, _DOSEGRID_PARAM_MAPPING)
+
+
+def params_from_rx(rx):
+    # Get params list from mapping and type of Rx.
+    if rx.PrescriptionType == 'DoseAtPoint':
+        # Could be either Poi or Site
+        if _rs_hasattr(rx, 'OnDoseSpecificationPoint'):
+            rx_type = 'Site'
+            mapping = _RX_SITE_PARAM_MAPPING
+        else:
+            rx_type = 'Poi'
+            mapping = _RX_POI_PARAM_MAPPING
+    else:
+        rx_type = 'Roi'
+        mapping = _RX_ROI_PARAM_MAPPING
+
+    params = params_from_mapping(rx, mapping)
+
+    params['RxType'] = rx_type
+
     return params
 
 
-def dup_object_param_values(obj_in, obj_out,
-                            includes=None, excludes=[], sub_objs=[], _depth=0):
-    if _depth > DUP_MAX_RECURSE:
-        raise RecursionError(f"{__name__} too deep ({_depth} layers),"
-                             " this may be a self referential object.")
+def params_from_photon_beam(beam):
 
-    sub_obj_depth = max([s.count('.') for s in sub_objs] + [0])
-    if sub_obj_depth > DUP_MAX_RECURSE:
-        raise ValueError(f"Subobjects too deep ({sub_obj_depth} > "
-                         f"{DUP_MAX_RECURSE}): {sub_objs=}")
-
-    # TODO: Consider exclududing any objects which are PyScriptObjects unless
-    # explicitly included.
-
-    # Get the list of sub_objects we might be acting on.
-    sub_o_set = {sub_o for sub_o in sub_objs if _rs_hasattr(obj_out, sub_o)}
-
-    # Objects to act on directly, copying everything in them.
-    sub_o_root_set = {sub_o for sub_o in sub_o_set if '.' not in sub_o}
-
-    # Objects who have a deep component to be acted on later in the recursed
-    # dup_obj_param_values call.
-    sub_o_deep_set = {sub_o for sub_o in sub_o_set if '.' in sub_o}
-    sub_o_deep_root_set = {sub_o.split('.', 1)[0] for sub_o in sub_o_deep_set}
-
-    # All roots, including shallow, shallow+deep, and deep only
-    sub_o_all_root_set = sub_o_root_set | sub_o_deep_root_set
-
-    # Mapping of sub_objs to pass to later dup_obj_param_values calls.
-    sub_o_deep_set_map = {o_root: {sub_sub_o.split('.', 1)[1] for sub_sub_o
-                                   in sub_o_deep_set
-                                   if sub_sub_o.split('.', 1)[0] == o_root}
-                          for o_root in sub_o_all_root_set}
-
-    # Objects with deep sets but no root set to copy (Handle differently from
-    # the normal objects
-    sub_o_deep_only_root_set = sub_o_deep_root_set - sub_o_root_set
-
-    # If passed a sub object with its own sub objects, assume that we cannot
-    # use it in the list of params to be copied alone.
-    top_excludes = sub_o_root_set | sub_o_deep_root_set | set(excludes)
-
-    if includes is None:
-        top_includes = set(dir(obj_out))
+    if 'Arc' in beam.DeliveryTechnique:
+        create_beam = 'CreateArcBeam'
+        mapping = _BEAM_PHOTON_ARC_PARAM_MAPPING
+        defaults = _BEAM_PHOTON_ARC_DEFAULT
     else:
-        top_includes = {inc for inc in includes if '.' not in inc}
+        create_beam = 'CreatePhotonBeam'
+        mapping = _BEAM_PHOTON_STATIC_PARAM_MAPPING
+        defaults = _BEAM_PHOTON_STATIC_DEFAULT
 
-    # Any objects in top that are callble should be excluded
-    top_callables = {p for p in top_includes if _rs_callable(obj_out, p)}
+    # Fill with easily obtainable values first.
+    params = params_from_mapping(beam, mapping, defaults)
 
-    # Any objects in top that are Script Collections or ScriptObjects should be
-    # excluded.
-    top_scriptitems = {p for p in top_includes
-                       if 'Script' in str(type(_rs_getattr(obj_out, p)))}
+    # Define which function will be used.
+    params['CreateFn'] = create_beam
 
-    valid_top_params = (top_includes - top_callables) - top_scriptitems
+    return params
 
-    params = valid_top_params - top_excludes
-    for param in params:
-        value = _rs_getattr(obj_in, param)
-        try:
-            setattr(obj_out, param, value)
-            _logger.debug(f'{"":->{_depth}s}{"":>>{_depth>0:d}s}'
-                          f'Set {param}={value} on {obj_out}')
-        except InvalidOperationException:
-            _logger.debug(f'{"":->{_depth}s}{"":>>{_depth>0:d}s}'
-                          f'Failed to set {param}={value} on {obj_out}')
 
-    # Loop through objects to be copied
-    for sub_obj in sub_o_root_set:
-        sub_in = _rs_getattr(obj_in, sub_obj)
-        sub_out = _rs_getattr(obj_out, sub_obj)
+def params_from_optimization(opt_fn):
+    # Fill with easily obtainable values first.
+    params = params_from_mapping(opt_fn, _OPTIMIZATION_FN_PARAM_MAPPING,
+                                 _OPTIMIZATION_FN_DEFAULT)
 
-        # Explicitly requested objects to copy.
-        sub_sub_objs = sub_o_deep_set_map[sub_obj]  # This may be an empty set
+    return params
 
-        # Exclude anything already excluded in the dot notation
-        sub_excludes = {exc.split('.', 1)[1] for exc in excludes
-                        if '.' in exc and sub_obj == exc.split('.', 1)[0]}
 
-        sub_includes = None
-        if includes:
-            sub_includes = {inc.split('.', 1)[1] for inc in includes
-                            if '.' in inc and inc.split('.', 1)[0] == sub_obj}
-
-        if not sub_includes and sub_obj not in sub_o_deep_only_root_set:
-            sub_includes = None
-
-        # Add excludes for all objects in root that are not in the sub_sub_objs
-        # list if this is a member of the sub_o_deep_only_root_set.
-        dup_object_param_values(sub_in,
-                                sub_out,
-                                includes=sub_includes,
-                                excludes=sub_excludes,
-                                sub_objs=sub_sub_objs,
-                                _depth=_depth+1)
-    return None
+def params_from_plan(plan):
+    plan_params = params_from_mapping(plan, _PLAN_PARAM_MAPPING,
+                                      _PLAN_PARAM_DEFAULT)
+    return plan_params
 
 
 def copy_plan_to_duplicate_exam(patient, icase, plan_in):
@@ -484,8 +367,7 @@ def copy_plan_to_duplicate_exam(patient, icase, plan_in):
 
 
 def copy_plan_to_exam(icase, plan_in, exam_out):
-    plan_params = param_from_mapping(plan_in, _PLAN_PARAM_MAPPING,
-                                     _PLAN_PARAM_DEFAULT)
+    plan_params = params_from_plan(plan_in)
 
     plan_out_name = get_unique_name(f'{plan_in.Name} (dup)',
                                     icase.TreatmentPlans)
@@ -493,6 +375,9 @@ def copy_plan_to_exam(icase, plan_in, exam_out):
     plan_params['ExaminationName'] = exam_out.Name
 
     plan_params['PlanName'] = plan_out_name
+
+    return plan_params
+
     with _CompositeAction("Create duplicate plan {plan_out_name}"):
         # First create an empty plan on the new exam.
         _logger.debug(f"Add new plan with {plan_params=}")
@@ -563,27 +448,6 @@ def copy_bs(plan_in, beamset_in, plan_out, examination_name=None):
     beamset_out.UpdateDoseGrid(**dg_params)
 
 
-def params_from_rx(rx):
-    # Get params list from mapping and type of Rx.
-    if rx.PrescriptionType == 'DoseAtPoint':
-        # Could be either Poi or Site
-        if _rs_hasattr(rx, 'OnDoseSpecificationPoint'):
-            rx_type = 'Site'
-            mapping = _RX_SITE_PARAM_MAPPING
-        else:
-            rx_type = 'Poi'
-            mapping = _RX_POI_PARAM_MAPPING
-    else:
-        rx_type = 'Roi'
-        mapping = _RX_ROI_PARAM_MAPPING
-
-    params = param_from_mapping(rx, mapping)
-
-    params['RxType'] = rx_type
-
-    return params
-
-
 def copy_rx(beamset_in, beamset_out):
     _logger.debug(f"Copying Prescriptions from {beamset_in} to {beamset_out}.")
 
@@ -619,34 +483,6 @@ def copy_rx(beamset_in, beamset_out):
             last_rx.SetPrimaryPrescriptionDoseReference()
 
 
-def photon_params_from_beam(beam):
-
-    if 'Arc' in beam.DeliveryTechnique:
-        create_beam = 'CreateArcBeam'
-        mapping = _BEAM_PHOTON_ARC_PARAM_MAPPING
-        defaults = _BEAM_PHOTON_ARC_DEFAULT
-    else:
-        create_beam = 'CreatePhotonBeam'
-        mapping = _BEAM_PHOTON_STATIC_PARAM_MAPPING
-        defaults = _BEAM_PHOTON_STATIC_DEFAULT
-
-    # Fill with easily obtainable values first.
-    params = param_from_mapping(beam, mapping, defaults)
-
-    # Define which function will be used.
-    params['CreateFn'] = create_beam
-
-    return params
-
-
-def params_from_optimization(opt_fn):
-    # Fill with easily obtainable values first.
-    params = param_from_mapping(opt_fn, _OPTIMIZATION_FN_PARAM_MAPPING,
-                                _OPTIMIZATION_FN_DEFAULT)
-
-    return params
-
-
 def beam_opt_settings_from_plan(plan, beam):
     for opt in plan.PlanOptimizations:
         for tx_setup in opt.OptimizationParameters.TreatmentSetupSettings:
@@ -665,7 +501,7 @@ def copy_beams(plan_in, beamset_in, plan_out, beamset_out,
 
     if beamset_in.Modality == 'Photons':
         # Will have to test which one later, for now just use PhotonBeam
-        params_from_beam = photon_params_from_beam
+        params_from_beam = params_from_photon_beam
     else:
         raise NotImplementedError("Only photons supported at this time.")
 
@@ -716,8 +552,8 @@ def copy_beams(plan_in, beamset_in, plan_out, beamset_out,
         if 'Arc' in beam_in.DeliveryTechnique:
             acp_in = beamsetting_in.ArcConversionPropertiesPerBeam
             acp_out = beamsetting_out.ArcConversionPropertiesPerBeam
-            arc_params = param_from_mapping(acp_in,
-                                            _ARC_BEAM_OPT_PARAM_MAPPING)
+            arc_params = params_from_mapping(acp_in,
+                                             _ARC_BEAM_OPT_PARAM_MAPPING)
 
             acp_out.EditArcBasedBeamOptimizationSettings(**arc_params)
 
@@ -837,24 +673,43 @@ def copy_opt_functions(opt_in, opt_out):
 
 def copy_opt_parameters(optparam_in, optparam_out):
 
-    # Build matching TSS based on TSS.ForTreatmentSetup.DicomPlanName
-    tss_dict_in = {tss.ForTreatmentSetup.DicomPlanLabel: tss for tss
-                   in optparam_in.TreatmentSetupSettings}
-    tss_dict_out = {tss.ForTreatmentSetup.DicomPlanLabel: tss for tss
-                    in optparam_out.TreatmentSetupSettings
-                    if tss.ForTreatmentSetup.DicomPlanLabel in tss_dict_in}
-    # Copy TreatmentSetupSettings
-    for tss_name, tss_out in tss_dict_out.items():
-        copy_opt_tss(tss_dict_in[tss_name], tss_out)
-
+    # Duplicate basic objects first
     dup_object_param_values(optparam_in, optparam_out,
                             excludes=_OPTIMIZATION_PARAM_EXCLUDE,
                             sub_objs=_OPTIMIZATION_PARAM_SUBOBJS)
 
+    # Build matching TSS based on TSS.ForTreatmentSetup.DicomPlanName
+    tss_dict_in = ObjectDict(optparam_in.TreatmentSetupSettings)
+    tss_dict_out = ObjectDict(optparam_out.TreatmentSetupSettings)
+
+    # Copy TreatmentSetupSettings
+    for tss_name in tss_dict_out & tss_dict_in:
+        copy_opt_tss(tss_dict_in[tss_name], tss_dict_out[tss_name])
+
+    # For robustness, try adding any additional exams present ing the
+    # PatientGeometryUncertaintyParameters.Examinations collection.
+    try:
+        rob_in = optparam_in.RobustnessParameters
+        if len(rob_in.PatientGeometryUncertaintyParameters.Examinations) > 0:
+            # TODO: For robustness, we will need to call
+            # optparam_out.SaveRobustnessParameters to set the examinations.
+            raise NotImplementedError
+    except (TypeError, AttributeError):
+        pass
+
 
 def copy_opt_tss(tss_in, tss_out):
     _logger.debug(f"Copying TreatmentSetupSettings {tss_in} to {tss_out}")
+
+    # Copy SegmentConversion objects
     dup_object_param_values(tss_in.SegmentConversion,
                             tss_out.SegmentConversion,
                             sub_objs=['ArcConversionProperties'])
-    pass
+
+    # Build matching BeamSettings based on obj_name(BS.ForBeam)
+    bss_dict_in = ObjectDict(tss_in.BeamSettings)
+    bss_dict_out = ObjectDict(tss_out.BeamSettings)
+
+    for bss_name in bss_dict_in & bss_dict_out:
+        dup_object_param_values(bss_dict_in[bss_name], bss_dict_out[bss_name],
+                                sub_objs=['ArcConversionPropertiesPerBeam'])

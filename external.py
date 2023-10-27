@@ -1,10 +1,13 @@
 from enum import IntEnum
 import sys
+from copy import deepcopy
 import logging as _logging
 _logger = _logging.getLogger(__name__)
 
 
-__opts = {}
+__opts = {'DUP_MAX_RECURSE': 10}
+
+_NAMELIST = ['Name', 'DicomPlanLabel']
 
 
 def helperoverride(function):
@@ -197,16 +200,42 @@ finally:
         _realclass = _CompositeActionOrig
 
         def __init__(self, *args, **kwargs):
-            cls = type(self)
             self.my_args = (args, kwargs)
-            if cls._clsinstance or cls._blocked:
-                self._instance = cls._dummyclass(*args, **kwargs)
-            else:
-                self._instance = cls._realclass(*args, **kwargs)
-                cls._clsinstance = self
+            self.instance
+
+        @property
+        def instance(self):
+            cls = type(self)
+            if not self._instance:
+                (args, kwargs) = self.my_args
+                if cls._clsinstance or cls._blocked:
+                    self._instance = cls._dummyclass(*args, **kwargs)
+                else:
+                    self._instance = cls._realclass(*args, **kwargs)
+                    cls._clsinstance = self
+
+            return self._instance
+
+        @classmethod
+        def block(cls):
+            cls._blocked = True
+
+        @classmethod
+        def unblock(cls):
+            cls._blocked = False
+
+        @classmethod
+        @property
+        def isactive(cls):
+            return cls._clsinstance is not None
+
+        @classmethod
+        @property
+        def active_singleton(cls):
+            return cls._clsinstance
 
         def __enter__(self):
-            self._instance.__enter__()
+            self.instance.__enter__()
             return None
 
         def __exit__(self, e_type, e, e_traceback):
@@ -219,12 +248,14 @@ finally:
                 # the class instance and let a new one start next time.
                 cls._clsinstance = None
 
-            type(self._instance).__exit__(self._instance,
-                                          e_type, e, e_traceback)
+            # Use the private instance so we don't create a new one
+            # accidentally (will throw an Error if _instance is None because we
+            # have exited twice without entering
+            self._instance.__exit__(e_type, e, e_traceback)
 
-            # FIXME:
-            # Make sure that we don't reuse this object later (for now we can
-            # only enter and exit once...with more logic this could be fixed.
+            # Make sure that we don't reuse this instance later, if we run
+            # __enter__ again, it will generate a new self._instance following
+            # the logic in instance(self)
             self._instance = None
 
             return None
@@ -244,21 +275,24 @@ finally:
                 self.message = f"{self.message}: ({reason})"
 
         def __enter__(self):
-            ca_class = type(self)._CompositeActionClass
-            ca_class._blocked = True
-            if ca_class._clsinstance:
+            cls = type(self)
+            ca_class = cls._CompositeActionClass
+            ca_class.block()
+            if ca_class.isactive:
                 # Currently in a CompositeAction, suspend it.
                 _logger.info(f"{self.message}")
-                active_ca_wrapper = ca_class._clsinstance
-                self.active_ca_wrapper = active_ca_wrapper
-                active_ca_wrapper.__exit__(None, None, None)
+                self.active_ca_wrapper = ca_class.active_singleton
+                # Exit the composite action without an error.
+                self.active_ca_wrapper.__exit__(None, None, None)
 
             return None
 
         def __exit__(self, e_type, e, e_traceback):
             cls = type(self)
             if e_type is not None:
-                _logger.exception(str(e))
+                _logger.exception(f"Reached exit of {self.__class__.__name__}"
+                                  " with an error, bubble up.")
+                raise e
 
             if self == cls._clsinstance:
                 # We were the first launch of SuspendCompositeAction, we can
@@ -267,15 +301,13 @@ finally:
 
                 # Unblock CompositeAction from being created.
                 ca_class = cls._CompositeActionClass
-                ca_class._blocked = False
+                ca_class.unblock()
 
                 if self.active_ca_wrapper:
                     # There was a running CompositeAction when we halted, start
                     # it again with the same arguments
-                    ca_act = self.active_ca_wrapper
-                    args, kwargs = ca_act.my_args
-                    ca_act._instance = ca_class._realclass(*args, **kwargs)
-                    ca_act._instance.__enter__()
+                    self.active_ca_wrapper.instance.__enter__()
+                    self.active_ca_wrapper = None
 
             return None
 
@@ -320,6 +352,10 @@ def rs_hasattr(obj, attrname):
 
 
 def rs_getattr(obj, attrname):
+    if attrname in ['', '.', 'self']:
+        # If we are passed an empty attrname, a bare dot, or self, return obj
+        return obj
+
     if rs_hasattr(obj, attrname) and '.' in attrname:
         # Composite attribute, nest.
         firstattr, rest = attrname.split('.', 1)
@@ -437,13 +473,51 @@ class ListSelectorDialog(RayWindow):
             self.Close()
 
 
-def obj_name(obj):
-    _NAMELIST = ['Name', 'DicomPlanLabel']
+def obj_name(obj, name_identifier_object='.', strict=False):
     try:
-        return rs_getattr(obj, [attr for attr in _NAMELIST
-                                if rs_hasattr(obj, attr)][0])
+        obj = rs_getattr(obj, name_identifier_object)
+    except AttributeError:
+        _logger.warning(f"{obj} has no attribute {name_identifier_object}")
+
+    try:
+        return rs_getattr(obj, [attr for attr in _NAMELIST if
+                                rs_hasattr(obj, attr)][0])
     except IndexError:
+        if strict:
+            raise ValueError("No matching identifier")
+
         return str(obj)
+
+
+def has_obj_name(obj, name_identifier_object='.'):
+    try:
+        obj = rs_getattr(obj, name_identifier_object)
+    except AttributeError:
+        _logger.warning(f"{obj} has no attribute {name_identifier_object}")
+
+    return any(lambda attr: rs_hasattr(obj, attr), _NAMELIST)
+
+
+def guess_name_id(obj_collection, first_guess=None):
+    guess_list = []
+
+    if first_guess:
+        guess_list.append(first_guess)
+
+    first_obj = next(iter(obj_collection))
+    guess_list += [attr for attr in dir(first_obj) if attr[0:3] == 'For']
+
+    for guess in guess_list:
+        try:
+            names = [obj_name(obj, guess, strict=True)
+                     for obj in obj_collection]
+            # Test for uniqueness
+            if len(names) == len(set(names)):
+                return guess
+        except ValueError:
+            continue
+
+    raise ValueError("Unable to guess unique name id.")
 
 
 def pick_list(obj_list, description="Select One", current=None, default=None):
@@ -497,5 +571,198 @@ def pick_plan(plans=None, include_current=True, default=None):
                                  if include_current
                                  or obj_name(plan) != obj_name(current)]
     return pick_list(plans, "Select Plan:", current=current, default=default)
+
+
+def dup_object_param_values(obj_in, obj_out,
+                            includes=None, excludes=[], sub_objs=[], _depth=0):
+    if obj_in is None:
+        raise TypeError("Got passed a nonetype object to copy from.")
+
+    if _depth > __opts['DUP_MAX_RECURSE']:
+        raise RecursionError(f"{__name__} too deep ({_depth} layers),"
+                             " this may be a self referential object.")
+
+    sub_obj_depth = max([s.count('.') for s in sub_objs] + [0])
+    if sub_obj_depth > __opts['DUP_MAX_RECURSE']:
+        raise ValueError(f"Subobjects too deep ({sub_obj_depth} > "
+                         f"{__opts['DUP_MAX_RECURSE']}): {sub_objs=}")
+
+    # TODO: Consider exclududing any objects which are PyScriptObjects unless
+    # explicitly included.
+
+    # Get the list of sub_objects we might be acting on.
+    sub_o_set = {sub_o for sub_o in sub_objs
+                 if (rs_hasattr(obj_out, sub_o)
+                     and rs_getattr(obj_out, sub_o) is not None)}
+
+    # Objects to act on directly, copying everything in them.
+    sub_o_root_set = {sub_o for sub_o in sub_o_set if '.' not in sub_o}
+
+    # Objects who have a deep component to be acted on later in the recursed
+    # dup_obj_param_values call.
+    sub_o_deep_set = {sub_o for sub_o in sub_o_set if '.' in sub_o}
+    sub_o_deep_root_set = {sub_o.split('.', 1)[0] for sub_o in sub_o_deep_set}
+
+    # All roots, including shallow, shallow+deep, and deep only
+    sub_o_all_root_set = sub_o_root_set | sub_o_deep_root_set
+
+    # Mapping of sub_objs to pass to later dup_obj_param_values calls.
+    sub_o_deep_set_map = {o_root: {sub_sub_o.split('.', 1)[1] for sub_sub_o
+                                   in sub_o_deep_set
+                                   if sub_sub_o.split('.', 1)[0] == o_root}
+                          for o_root in sub_o_all_root_set}
+
+    # Objects with deep sets but no root set to copy (Handle differently from
+    # the normal objects
+    sub_o_deep_only_root_set = sub_o_deep_root_set - sub_o_root_set
+
+    # If passed a sub object with its own sub objects, assume that we cannot
+    # use it in the list of params to be copied alone.
+    top_excludes = sub_o_root_set | sub_o_deep_root_set | set(excludes)
+
+    if includes is None:
+        top_includes = set(dir(obj_out))
+    else:
+        top_includes = {inc for inc in includes if '.' not in inc}
+
+    # Any objects in top that are callble should be excluded
+    top_callables = {p for p in top_includes if rs_callable(obj_out, p)}
+
+    # Any objects in top that are Script Collections or ScriptObjects should be
+    # excluded.
+    top_scriptitems = {p for p in top_includes
+                       if 'Script' in (type(rs_getattr(obj_out, p))).__name__}
+
+    valid_top_params = (top_includes - top_callables) - top_scriptitems
+
+    params = valid_top_params - top_excludes
+    for param in params:
+        value = rs_getattr(obj_in, param)
+        try:
+            setattr(obj_out, param, value)
+            _logger.debug(f'{"":->{_depth}s}{"":>>{_depth>0:d}s}'
+                          f'Set {param}={value} on {obj_out}')
+        except InvalidOperationException:
+            _logger.debug(f'{"":->{_depth}s}{"":>>{_depth>0:d}s}'
+                          f'Failed to set {param}={value} on {obj_out}')
+
+    # Loop through objects to be copied
+    for sub_obj in sub_o_root_set:
+        sub_in = rs_getattr(obj_in, sub_obj)
+        sub_out = rs_getattr(obj_out, sub_obj)
+
+        # Explicitly requested objects to copy.
+        sub_sub_objs = sub_o_deep_set_map[sub_obj]  # This may be an empty set
+
+        # Exclude anything already excluded in the dot notation
+        sub_excludes = {exc.split('.', 1)[1] for exc in excludes
+                        if '.' in exc and sub_obj == exc.split('.', 1)[0]}
+
+        sub_includes = None
+        if includes:
+            sub_includes = {inc.split('.', 1)[1] for inc in includes
+                            if '.' in inc and inc.split('.', 1)[0] == sub_obj}
+
+        if not sub_includes and sub_obj not in sub_o_deep_only_root_set:
+            sub_includes = None
+
+        # Add excludes for all objects in root that are not in the sub_sub_objs
+        # list if this is a member of the sub_o_deep_only_root_set.
+        dup_object_param_values(sub_in,
+                                sub_out,
+                                includes=sub_includes,
+                                excludes=sub_excludes,
+                                sub_objs=sub_sub_objs,
+                                _depth=_depth+1)
+    return None
+
+
+class CallLaterList():
+    _fn_list = {}  # Class level list
+
+    def _def_fn(self, *args, **kwargs):
+        raise NotImplementedError("Must be initialised first.")
+
+    def __getattr__(self, fn):
+        if fn not in self._fn_list:
+            self._fn_list[fn] = CallLater()
+        return self._fn_list[fn]
+
+    def __call__(self, fn):
+        fnname = fn.__name__
+        myfn = self.__getattr__(fnname)
+        myfn.set_fn(fn)
+        return myfn
+
+
+class CallLater():
+    _myfn = None
+
+    def __call__(self, *args, **kwargs):
+        return self._myfn(*args, **kwargs)
+
+    def set_fn(self, fn):
+        self._myfn = fn
+
+
+def get_unique_name(obj, container):
+    if isinstance(container, set):
+        limiting_set = container
+    elif rs_hasattr(container, 'Keys'):
+        limiting_set = set(container.Keys)
+    else:
+        try:
+            limiting_set = set(map(obj_name, container))
+        except (ValueError, AttributeError):
+            limiting_set = set(container)
+
+    o_name = f'{obj}'
+    n = 0
+    while o_name in limiting_set:
+        o_name = f'{obj} ({n})'
+        n += 1
+
+    return o_name
+
+
+class ObjectDict(dict):
+    _name_id = None
+
+    def __init__(self, obj_collection=None, name_identifier='.'):
+        super().__init__()
+
+        self._name_id = guess_name_id(obj_collection, name_identifier)
+
+        if obj_collection is not None:
+            self.update(obj_collection)
+
+    def update(self, collection):
+        if type(collection).__name__ == 'PyScriptObjectCollection':
+            return super().update({obj_name(obj, self._name_id): obj
+                                   for obj in collection})
+        else:
+            return super().update(collection)
+
+    def __and__(self, other):
+        return self.keys() & other.keys()
+
+
+def params_from_mapping(obj, param_map, default_map=None):
+    if default_map:
+        params = deepcopy(default_map)
+    else:
+        params = {}
+
+    map_p = {key: (param_map[key](obj) if callable(param_map[key])
+                   else (rs_getattr(obj, key) if rs_hasattr(obj, key) else
+                         rs_getattr(obj, param_map[key])))
+             for key in param_map
+             if key and (callable(param_map[key])
+                         or rs_hasattr(obj, param_map[key])
+                         or rs_hasattr(obj, key))}
+
+    params.update(map_p)
+    return params
+
 
 # __all__ = [dcmread, CompositeAction, get_current]
