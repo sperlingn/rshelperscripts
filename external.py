@@ -126,6 +126,10 @@ def Show_OK(message, caption, ontop=False, icon=MB_Icon.None_,
     return _Show_MB(message, caption, button, icon, defaultResult, ontop=ontop)
 
 
+def Show_Warning(message, caption, ontop=True):
+    return Show_OK(message, caption, ontop, icon=MB_Icon.Warning_)
+
+
 def Show_OKCancel(message, caption, ontop=False, icon=MB_Icon.None_,
                   defaultResult=MB_Result.None_):
     button = MB_Button.OKCancel

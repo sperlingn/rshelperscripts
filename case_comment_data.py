@@ -19,10 +19,13 @@ def filter_lines(lines, re=UID_RE):
             [line for line in lines if not re.match(line)])
 
 
-def set_validation_comment(plan, beam_set, validation_type, status=True):
+def beamset_validation_checkraise(beam_set):
     if not beam_set.ModificationInfo or not beam_set.ModificationInfo.DicomUID:
-        raise ValueError("Cannot set validation comment,"
-                         " plan is not yet saved.")
+        raise UserWarning("Can't set comment, beamset is not yet saved.")
+
+
+def set_validation_comment(plan, beam_set, validation_type, status=True):
+    beamset_validation_checkraise(beam_set)
 
     try:
         existing = plan.Comments.split('\n')

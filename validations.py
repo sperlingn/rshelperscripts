@@ -1,5 +1,7 @@
-from .external import Show_OK, Show_YesNo, MB_Icon, MB_Result, CompositeAction
-from .case_comment_data import set_validation_comment
+from .external import (Show_OK, Show_YesNo, MB_Icon, MB_Result,
+                       CompositeAction, Show_Warning)
+from .case_comment_data import (set_validation_comment,
+                                beamset_validation_checkraise)
 from .collision_rois import check_collision
 from .collision_dialog import check_collision_dialog
 import logging
@@ -42,6 +44,7 @@ def fix_jaw(beam_set):
 
 
 def validate_jaw(plan, beam_set, silent=False, fix_errors=False):
+    beamset_validation_checkraise(beam_set)
     errorlist = check_jaw(beam_set)
     if not silent:
         if not errorlist:
@@ -71,13 +74,22 @@ def validate_jaw(plan, beam_set, silent=False, fix_errors=False):
 
 
 def validate_collision(plan, beam_set, silent=False):
+    try:
+        beamset_validation_checkraise(beam_set)
+        can_update_comment = True
+    except UserWarning as warn:
+        if silent:
+            raise warn
+        else:
+            can_update_comment = False
+
     if silent:
         status = check_collision(plan, beam_set, silent=True,
                                  retain=False, retain_on_fail=False)
     else:
         status = check_collision_dialog(plan, beam_set)
 
-    if status['UpdateComment']:
+    if status['UpdateComment'] and can_update_comment:
         status = status['status']
         _logger.info(f"Updating validation status for plan to {status}.")
         set_validation_comment(plan, beam_set,
@@ -96,7 +108,12 @@ def run_all_validations(plan, beam_set=None, silent=False):
     else:
         beam_sets = [bs for bs in plan.BeamSets]
 
-    for name, validation_fn in validations.items():
-        _logger.info(f'Running {name}.')
-        for beam_set_loop in beam_sets:
-            validation_fn(plan, beam_set_loop, silent)
+    try:
+        for name, validation_fn in validations.items():
+            _logger.info(f'Running {name}.')
+            for beam_set_loop in beam_sets:
+                validation_fn(plan, beam_set_loop, silent)
+    except UserWarning as warn:
+        _logger.warning(f"Failed to check {beam_set_loop} in {plan}",
+                        exc_info=True)
+        Show_Warning(f"{warn}", "Can't Validate beamset.")
