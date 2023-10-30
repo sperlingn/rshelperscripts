@@ -376,8 +376,6 @@ def copy_plan_to_exam(icase, plan_in, exam_out):
 
     plan_params['PlanName'] = plan_out_name
 
-    return plan_params
-
     with _CompositeAction("Create duplicate plan {plan_out_name}"):
         # First create an empty plan on the new exam.
         _logger.debug(f"Add new plan with {plan_params=}")

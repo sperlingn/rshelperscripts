@@ -1,5 +1,5 @@
-from .external import dcmread, uid, await_user_input, SuspendCompositeAction
-# from .points import AffineIdentity
+from .external import (dcmread, uid, SuspendCompositeAction, obj_name,
+                       get_unique_name)
 
 import tempfile
 
@@ -45,7 +45,8 @@ _IMPORT_PARAMS = {
 _EXCLUDED_ROI_TYPES = ['Support', 'Bolus']
 
 
-def duplicate_exam(patient, icase, exam_in, copy_structs=True):
+def duplicate_exam(patient, icase, exam_in, copy_structs=True,
+                   exam_name_out=None):
     export_params = deepcopy(_SCRIPTED_EXPORT_FOR_EXAM)
 
     new_uid_root = uid.generate_uid()[0:-13]
@@ -107,7 +108,8 @@ def duplicate_exam(patient, icase, exam_in, copy_structs=True):
 
     exam_out = exams_out[0]
 
-    exam_out.Name = f'(dup) {exam_in.Name}'[0:63]
+    exam_name_out = exam_name_out if exam_name_out else obj_name(exam_in)
+    exam_out.Name = get_unique_name(exam_name_out, icase.Examinations)
 
     if copy_structs:
         roi_names = [roi.Name for roi in icase.PatientModel.RegionsOfInterest

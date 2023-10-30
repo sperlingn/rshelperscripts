@@ -230,8 +230,7 @@ finally:
             return cls._clsinstance is not None
 
         @classmethod
-        @property
-        def active_singleton(cls):
+        def get_active_singleton(cls):
             return cls._clsinstance
 
         def __enter__(self):
@@ -281,7 +280,7 @@ finally:
             if ca_class.isactive:
                 # Currently in a CompositeAction, suspend it.
                 _logger.info(f"{self.message}")
-                self.active_ca_wrapper = ca_class.active_singleton
+                self.active_ca_wrapper = ca_class.get_active_singleton()
                 # Exit the composite action without an error.
                 self.active_ca_wrapper.__exit__(None, None, None)
 
@@ -474,6 +473,9 @@ class ListSelectorDialog(RayWindow):
 
 
 def obj_name(obj, name_identifier_object='.', strict=False):
+    if isinstance(obj, str):
+        return obj
+
     try:
         obj = rs_getattr(obj, name_identifier_object)
     except AttributeError:
@@ -705,7 +707,7 @@ class CallLater():
         self._myfn = fn
 
 
-def get_unique_name(obj, container):
+def get_unique_name(obj, container, char_limit=64):
     if isinstance(container, set):
         limiting_set = container
     elif rs_hasattr(container, 'Keys'):
@@ -716,10 +718,11 @@ def get_unique_name(obj, container):
         except (ValueError, AttributeError):
             limiting_set = set(container)
 
-    o_name = f'{obj}'
-    n = 0
+    o_name = obj_name(obj)
+    oo_name = o_name
+    n = 1
     while o_name in limiting_set:
-        o_name = f'{obj} ({n})'
+        o_name = f'{oo_name[0:(char_limit - 5 - n//10)]} ({n})'
         n += 1
 
     return o_name
