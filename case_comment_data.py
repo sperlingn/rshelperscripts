@@ -154,7 +154,9 @@ def get_case_comment_data(icase, first=False):
     """
     Pulls first pickled data in the case comment field.
     """
-    return get_data(icase.Comments, first)
+    data = get_data(icase.Comments, first)
+    _logger.debug("{data=}")
+    return data
 
 
 def set_case_comment_data(icase, data, name='', replace=True):
@@ -164,6 +166,8 @@ def set_case_comment_data(icase, data, name='', replace=True):
     comment_str = icase.Comments
 
     new_comment = build_data_str(comment_str, data, name, replace)
+
+    _logger.debug(f"setting '{name}': '{data}'")
 
     try:
         with CompositeAction("Updating Case Comment String with encoded data"):
