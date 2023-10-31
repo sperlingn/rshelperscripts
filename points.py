@@ -1,9 +1,12 @@
 import logging
 from math import sqrt, sin, cos, pi
 from typing import Sequence, List, Tuple
-from .external import rs_callable
+from .external import rs_callable, rs_hasattr, rs_getattr
+from .rsdicomread import read_dataset
 
 _logger = logging.getLogger(__name__)
+
+VALID_MODALITIES = ['CT']
 
 
 def floatable_attr(obj, attrname):
@@ -125,7 +128,8 @@ class point(dict):
     def _round(self):
         if self._precision:
             for c in self._COORDS:
-                self[c] = round(self[c], self._precision)
+                if self[c] is not None:
+                    self[c] = round(self[c], self._precision)
 
     def __changed__(self):
         self._round()
@@ -445,6 +449,7 @@ class CT_Image_Stack():
     _npixels = None
     _res = None
     _img_stack = None
+    DICOM = None
 
     def __init__(self, img_stack):
         self._img_stack = img_stack
@@ -465,6 +470,8 @@ class CT_Image_Stack():
         self._size = self._npixels * self._res
 
         self._bounding_box = BoundingBox(img_stack)
+
+        self.DICOM, = read_dataset(self._img_stack)
 
     # Act like a regular RS ImageStack for anything we haven't overriden.
     def __getattr__(self, attr):
@@ -683,6 +690,35 @@ class CT_Image_Stack():
                     edge_pair_centers.append(Hole(center, dist))
 
         return sorted(edge_pair_centers)
+
+
+class Image_Series():
+    _series = None
+    img_stack = None
+    UID = ''
+    DICOM = None
+
+    def __init__(self, series):
+        self._series = series
+
+        self.UID = series.ImportedDicomUID
+
+        self.img_stack = CT_Image_Stack(series.ImageStack)
+
+        self.DICOM = self.img_stack.DICOM
+
+        if self.DICOM.Modality not in VALID_MODALITIES:
+            raise NotImplementedError("Unknown/unhandled modality "
+                                      f"{self.DICOM.Modality} in "
+                                      f"series {self._series} ({self.UID=})")
+
+    def __getattr__(self, attr):
+        if rs_hasattr(self._series, attr):
+            return rs_getattr(self._series, attr)
+        elif hasattr(self.img_stack, attr):
+            return getattr(self.img_stack, attr)
+
+        raise AttributeError
 
 
 class _M():
