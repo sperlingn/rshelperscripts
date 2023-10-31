@@ -1,9 +1,8 @@
 import logging
 from .clinicalgoals import copy_clinical_goals
 from .external import (CompositeAction as _CompositeAction, ObjectDict,
-                       params_from_mapping,
-                       rs_getattr as _rs_getattr,
-                       rs_hasattr as _rs_hasattr,
+                       params_from_mapping, get_machine,
+                       rs_getattr, rs_hasattr,
                        dup_object_param_values, CallLaterList, get_unique_name)
 from .examinations import duplicate_exam as _duplicate_exam
 # from .points import point as _point
@@ -274,10 +273,10 @@ def is_dual_arcs(arc_conv_settings):
 @cll
 def get_opt_fn_type(opt_fn):
     dfp = opt_fn.DoseFunctionParameters
-    if _rs_hasattr(dfp, 'FunctionType'):
+    if rs_hasattr(dfp, 'FunctionType'):
         _logger.debug(f"{opt_fn} had {dfp.FunctionType=}")
         return dfp.FunctionType
-    elif _rs_hasattr(dfp, 'PenaltyType'):
+    elif rs_hasattr(dfp, 'PenaltyType'):
         _logger.debug(f"{opt_fn} had {dfp.PenaltyType=}, "
                       "FunctionType set to 'DoseFallOff'")
         return 'DoseFallOff'
@@ -308,7 +307,7 @@ def params_from_rx(rx):
     # Get params list from mapping and type of Rx.
     if rx.PrescriptionType == 'DoseAtPoint':
         # Could be either Poi or Site
-        if _rs_hasattr(rx, 'OnDoseSpecificationPoint'):
+        if rs_hasattr(rx, 'OnDoseSpecificationPoint'):
             rx_type = 'Site'
             mapping = _RX_SITE_PARAM_MAPPING
         else:
@@ -359,14 +358,20 @@ def params_from_plan(plan):
     return plan_params
 
 
-def copy_plan_to_duplicate_exam(patient, icase, plan_in):
+def copy_plan_to_duplicate_exam(patient, icase, plan_in,
+                                exam_out_name=None, exclude_segments=True,
+                                forced_machine=None):
     exam_in = plan_in.BeamSets[0].GetPlanningExamination()
-    exam_out = _duplicate_exam(patient, icase, exam_in)
+    exam_out = _duplicate_exam(patient, icase, exam_in,
+                               exam_name_out=exam_out_name)
 
-    return copy_plan_to_exam(icase, plan_in, exam_out)
+    return copy_plan_to_exam(icase, plan_in, exam_out,
+                             exclude_segments=exclude_segments,
+                             forced_machine=forced_machine)
 
 
-def copy_plan_to_exam(icase, plan_in, exam_out):
+def copy_plan_to_exam(icase, plan_in, exam_out, exclude_segments=False,
+                      forced_machine=None):
     plan_params = params_from_plan(plan_in)
 
     plan_out_name = get_unique_name(f'{plan_in.Name} (dup)',
@@ -380,12 +385,16 @@ def copy_plan_to_exam(icase, plan_in, exam_out):
         # First create an empty plan on the new exam.
         _logger.debug(f"Add new plan with {plan_params=}")
         plan_out = icase.AddNewPlan(**plan_params)
-        copy_plan_to_plan(plan_in, plan_out, exam_out)
+        copy_plan_to_plan(plan_in, plan_out, exam_out,
+                          exclude_segments=exclude_segments,
+                          forced_machine=forced_machine)
 
     return icase.TreatmentPlans[plan_out_name]
 
 
-def copy_plan_to_plan(plan_in, plan_out, exam_out=None):
+def copy_plan_to_plan(plan_in, plan_out,
+                      exam_out=None, exclude_segments=False,
+                      forced_machine=None):
 
     tempbs = None
     if len(plan_out.BeamSets) > 1:
@@ -405,7 +414,9 @@ def copy_plan_to_plan(plan_in, plan_out, exam_out=None):
                           BeamNames=None)
 
     for bs in plan_in.BeamSets:
-        copy_bs(plan_in, bs, plan_out, exam_out.Name)
+        copy_bs(plan_in, bs, plan_out, exam_out.Name,
+                exclude_segments=exclude_segments,
+                forced_machine=forced_machine)
 
     # Done with the placeholder beamset.
     if tempbs:
@@ -416,10 +427,15 @@ def copy_plan_to_plan(plan_in, plan_out, exam_out=None):
     copy_plan_optimizations(plan_in, plan_out)
 
 
-def copy_bs(plan_in, beamset_in, plan_out, examination_name=None):
+def copy_bs(plan_in, beamset_in, plan_out,
+            examination_name=None, exclude_segments=False,
+            forced_machine=None):
     _logger.debug(f"Copying {beamset_in} to {plan_out} as new beamset.")
 
     params = params_from_beamset(beamset_in, examination_name)
+
+    if forced_machine is not None:
+        params['MachineName'] = forced_machine
 
     _logger.debug(f"Adding new beamset with {params=}")
 
@@ -435,7 +451,8 @@ def copy_bs(plan_in, beamset_in, plan_out, examination_name=None):
 
     copy_rx(beamset_in, beamset_out)
 
-    copy_beams(plan_in, beamset_in, plan_out, beamset_out)
+    copy_beams(plan_in, beamset_in, plan_out, beamset_out,
+               exclude_segments=exclude_segments)
 
     # After copying beams, set technique back to intended.
     if params['TreatmentTechnique'] != final_technique:
@@ -451,7 +468,7 @@ def copy_rx(beamset_in, beamset_out):
 
     rx_in = beamset_in.Prescription
     rx_out = beamset_out.Prescription
-    if not _rs_hasattr(rx_in, 'PrescriptionDoseReferences'):
+    if not rs_hasattr(rx_in, 'PrescriptionDoseReferences'):
         _logger.debug(f"{beamset_in} has no prescriptions, skipping")
         return False
 
@@ -471,7 +488,7 @@ def copy_rx(beamset_in, beamset_out):
         params = params_from_rx(rx)
 
         fn_type = params.pop('RxType')
-        fn = _rs_getattr(beamset_out, f'Add{fn_type}PrescriptionDoseReference')
+        fn = rs_getattr(beamset_out, f'Add{fn_type}PrescriptionDoseReference')
         _logger.debug(f'Adding {fn_type} Rx to {beamset_out}: {params}')
         fn(**params)
 
@@ -494,7 +511,7 @@ def beam_opt_settings_from_plan(plan, beam):
 
 
 def copy_beams(plan_in, beamset_in, plan_out, beamset_out,
-               copy_segments=False):
+               exclude_segments=True):
     _logger.debug(f"Copying beams from {beamset_in} to {beamset_out}.")
 
     if beamset_in.Modality == 'Photons':
@@ -512,6 +529,14 @@ def copy_beams(plan_in, beamset_in, plan_out, beamset_out,
 
     iso_map = {}
 
+    machine_in = get_machine(beamset_in.MachineReference.MachineName)
+    machine_out = get_machine(beamset_out.MachineReference.MachineName)
+
+    energy_map = {e: machine_out.closest_energy(e)
+                  for e in machine_in.photon_energies}
+
+    _logger.debug(f"{energy_map=}")
+
     # Use list(beamset_in.Beams) to freeze list of beams in case we are copying
     # into the same beamset.
     beam_in_list = list(beamset_in.Beams)
@@ -521,7 +546,7 @@ def copy_beams(plan_in, beamset_in, plan_out, beamset_out,
 
         _logger.debug(f"Copying {beam_in.Name} with {params=}.")
 
-        create_beam = _rs_getattr(beamset_out, params['CreateFn'])
+        create_beam = rs_getattr(beamset_out, params['CreateFn'])
         del params['CreateFn']
 
         # Handle potential duplicate beams
@@ -536,6 +561,8 @@ def copy_beams(plan_in, beamset_in, plan_out, beamset_out,
             _logger.debug(f"{iso_map=}, {iso_name=}")
             params['IsocenterData']['Name'] = iso_map[iso_name]
             params['IsocenterData']['NameOfIsocenterToRef'] = iso_map[iso_name]
+
+        params['BeamQualityId'] = energy_map[params['BeamQualityId']]
 
         create_beam(**params)
 
@@ -556,13 +583,13 @@ def copy_beams(plan_in, beamset_in, plan_out, beamset_out,
             acp_out.EditArcBasedBeamOptimizationSettings(**arc_params)
 
     # Need to generate Segments for all beams at once or it will fail.
-    if not copy_segments:
+    if exclude_segments:
         _logger.debug("Not asked to copy segments, done copying beams.")
         return None
 
     target_rois = [s.Name for s in pm_out.RegionsOfInterest
-                   if (_rs_hasattr(s, 'OrganData.OrganType')
-                       and (_rs_getattr(s, 'OrganData.OrganType') ==
+                   if (rs_hasattr(s, 'OrganData.OrganType')
+                       and (rs_getattr(s, 'OrganData.OrganType') ==
                             'Target'))]
     if not target_rois:
         _logger.warning("Asked to copy segments, but there are"
