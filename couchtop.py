@@ -4,14 +4,14 @@ from ast import literal_eval
 from struct import unpack_from
 from inspect import getargspec
 
-from .points import (point, BoundingBox, CT_Image_Stack, AffineMatrix)
-from .rsdicomread import read_dataset
+from .points import (point, BoundingBox, Image_Series, AffineMatrix)
 from .case_comment_data import (get_case_comment_data, set_case_comment_data,
                                 get_data)
 from .dosetools import invalidate_structureset_doses
 
 from .external import (get_current, CompositeAction, Show_YesNo,
-                       ArgumentOutOfRangeException)
+                       ArgumentOutOfRangeException,
+                       pick_machine, pick_plan, pick_exam)
 
 from .roi import ROI_Builder, ROI
 
@@ -19,12 +19,8 @@ import logging
 
 _logger = logging.getLogger(__name__)
 
-# TODO: Replace img_stack in uses with series, allowing us to store the offset
-# dict in the case with the ImportedDicomUID of the series, instead of the
-# reference in memory of the img_stack object
-#   (e.g. '1.2......' instead of '<ScriptObject id=-2147404801>')
-
-CT_Couch_TopY = 20.8
+CT_DEFAULT_Y = 20.8
+CT_DEFAULT_Y_TOLERANCE = 1
 CT_Top_NegativeX = -24
 HN_SEARCH_DELTA = 1.
 
@@ -142,20 +138,20 @@ PRIV_01F7_1027 = (0x01F7, 0x1027)
 HEURISTIC_OFFSET = 1526
 
 
-def guess_couchtop_z(img_stack):
+def guess_couchtop_z(series):
     """
     Guesses the z coordinate of the couch top based on specific dicom tags.
     Tags don't currently populate correctly, so work on reading them by hand.
     """
     try:
 
-        img, = read_dataset(img_stack)
+        img_dcm = series.DICOM
 
-        CZ_raw = img[PRIV_01F7_1027].value
+        CZ_raw = img_dcm[PRIV_01F7_1027].value
 
         couchZabs = unpack_from("f", CZ_raw)[0]
-        sliceloc = img.SliceLocation.real
-        ipp = img.ImagePositionPatient[2].real
+        sliceloc = img_dcm.SliceLocation.real
+        ipp = img_dcm.ImagePositionPatient[2].real
 
         cdist = sliceloc - couchZabs
         abs_couch_pos = cdist + HEURISTIC_OFFSET
@@ -178,33 +174,33 @@ def guess_couchtop_z(img_stack):
         return None
 
 
-def guess_board_x_center(img_stack, couch_y):
+def guess_board_x_center(series, couch_y):
     search_y = couch_y + HN_SEARCH_DELTA
 
     init_guess = point(x=HN_H2_X, y=search_y)
     # TODO: Put this in a try-except and fail to a new z for
     # finding the width.
     # Need to account for top hole not being on image
-    guess_edges = img_stack.find_edges(search_start=init_guess,
-                                       direction='-z', z_avg=0.05)
-    guess_holes = img_stack.holes_by_width(edges=guess_edges,
-                                           width=HN_H_DIAM,
-                                           tolerance=1.)
+    guess_edges = series.find_edges(search_start=init_guess,
+                                    direction='-z', z_avg=0.05)
+    guess_holes = series.holes_by_width(edges=guess_edges,
+                                        width=HN_H_DIAM,
+                                        tolerance=1.)
     if guess_holes:
         init_guess.z = guess_holes[-1].center.z
     else:
-        init_guess.z = (img_stack.Corner.z
-                        + (max(img_stack.SlicePositions)/2))
+        init_guess.z = (series.Corner.z
+                        + (max(series.SlicePositions)/2))
 
-    width_edges = img_stack.find_edges(search_start=init_guess,
-                                       direction='x')
+    width_edges = series.find_edges(search_start=init_guess,
+                                    direction='x')
 
     if width_edges:
         x_offset = (width_edges[-1][1].x + width_edges[0][0].x)/2
     else:
         x_offset = 0
-    _logger.debug(f"{x_offset=}")
-    return x_offset
+        _logger.debug(f"{x_offset=}")
+        return x_offset
 
 
 def guess_machine(icase):
@@ -222,11 +218,10 @@ def guess_machine(icase):
                     return mach
                 else:  # Answer might be overriden later, set and continue
                     machine = mach
-    # TODO: Prompt for machine if we can't figure it out
-    return machine
+    return pick_machine(default=machine).Alias
 
 
-def test_for_hn(icase, img_stack):
+def test_for_hn(icase, series):
     """
     Test the case for if it is likely to have a H&N board used.
     Simple tests first (e.g. if the case is a pelvis, return False) followed by
@@ -253,8 +248,8 @@ def test_for_hn(icase, img_stack):
     return False
 
 
-def find_table_height(img_stack, resolution=None, search_start=None,
-                      x_avg=None, z_avg=1., default=CT_Couch_TopY):
+def find_table_height(series, resolution=None, search_start=None,
+                      x_avg=None, z_avg=1., default=CT_DEFAULT_Y):
     """
     Find the table surface from image.
     """
@@ -263,35 +258,39 @@ def find_table_height(img_stack, resolution=None, search_start=None,
     search_start = search_start if search_start else {'x': CT_Top_NegativeX,
                                                       'y': None,
                                                       'z': None}
-    x_avg = x_avg if x_avg else img_stack.PixelSize.x
+    x_avg = x_avg if x_avg else series.PixelSize.x
     y_avg = resolution if resolution else None
 
     # Minimum value for a peak to be considered real
     threshold = -200
 
     # For any prone images, get the other side of the edge
-    is_rising = img_stack.ColumnDirection.y == -1
+    is_rising = series.ColumnDirection.y == -1
 
     try:
-        edge = img_stack.find_first_edge(search_start=search_start,
-                                         x_avg=x_avg,
-                                         y_avg=y_avg,
-                                         z_avg=z_avg,
-                                         direction='-y',
-                                         threshold=threshold,
-                                         rising_edge=is_rising)
+        edge_pairs = series.find_edges(search_start=search_start,
+                                       x_avg=x_avg,
+                                       y_avg=y_avg,
+                                       z_avg=z_avg,
+                                       direction='-y',
+                                       threshold=threshold)
 
-        _logger.debug(f"{edge=}")
-        return edge.y
+        _logger.debug(f"{edge_pairs=}")
+        for edge_pair in edge_pairs:
+            edge = edge_pair[not is_rising]
+            # Only return if it seems reasonable.
+            if abs(CT_DEFAULT_Y - edge.y) <= CT_DEFAULT_Y_TOLERANCE:
+                return edge.y
 
     except (ValueError, IndexError, SystemError, TypeError):
         _logger.exception("Couldn't find top height, using default.")
-        return default
+
+    return default
 
 
-def get_or_find_table_height(img_stack, /, icase=None, resolution=None,
+def get_or_find_table_height(series, /, icase=None, resolution=None,
                              search_start=None, x_avg=None, z_avg=1.,
-                             default=CT_Couch_TopY, force=False, store=True):
+                             default=CT_DEFAULT_Y, force=False, store=True):
 
     fth_kwarg_list, _, _, _ = getargspec(find_table_height)
     fth_kwargs = {k: v for k, v in locals().items() if k in fth_kwarg_list}
@@ -300,13 +299,17 @@ def get_or_find_table_height(img_stack, /, icase=None, resolution=None,
         return find_table_height(**fth_kwargs)
 
     case_data = get_case_comment_data(icase)
-    if 'couch_y' in case_data and not force:
-        return case_data['couch_y']
+
+    case_couch_y = case_data.get('couch_y', {})
+
+    if series.UID in case_couch_y and not force:
+        return case_couch_y[series.UID]
     else:
         couch_y = find_table_height(**fth_kwargs)
+        case_couch_y[series.UID] = couch_y
 
     if store:
-        set_case_comment_data(name='couch_y', data=couch_y, icase=icase)
+        set_case_comment_data(name='couch_y', data=case_couch_y, icase=icase)
 
     return couch_y
 
@@ -520,7 +523,7 @@ class CouchTop(object):
                 'InitializationOption': "AlignImageCenters"}
 
     def add_to_case(self, icase=None, examination=None,
-                    couch_y=CT_Couch_TopY, match_z=True, force_z=None):
+                    couch_y=CT_DEFAULT_Y, match_z=True, force_z=None):
         if icase is None:
             icase = get_current("Case")
         if examination is None:
@@ -597,7 +600,7 @@ class CouchTop(object):
         self._bounding_box = None
 
     @classmethod
-    def get_board_offset_from_image(cls, img_stack, couch_y):
+    def get_board_offset_from_image(cls, series, couch_y):
         """
         Searches for coordinate of top of board.
         Simple search looks only for the central hole.
@@ -605,11 +608,11 @@ class CouchTop(object):
           based on the positions of the 4 side holes.  This method is preferred
           as CT scans often cut off the top of the board.
         """
-        if cls._board_offset and str(img_stack) in cls._board_offset:
+        if cls._board_offset and series.UID in cls._board_offset:
             _logger.debug(f"Found offset in class: {cls._board_offset}")
-            return cls._board_offset[str(img_stack)].copy()
+            return cls._board_offset[series.UID].copy()
 
-        z = img_stack.Corner.z + max(img_stack.SlicePositions)
+        z = series.Corner.z + max(series.SlicePositions)
 
         # To start, get a guess at the first hole, then find the center
         # of the H&N Board in the X direction.  We will then move the
@@ -617,7 +620,7 @@ class CouchTop(object):
 
         try:
             _logger.debug(f"Searching for board center at height {couch_y}")
-            x_offset = guess_board_x_center(img_stack, couch_y)
+            x_offset = guess_board_x_center(series, couch_y)
             _logger.debug(f"Found board center at {x_offset}")
         except (TypeError, ValueError, IndexError, Warning):
             _logger.warning("Couldn't find center of board, assuming 0.")
@@ -628,12 +631,12 @@ class CouchTop(object):
             search_point = point(x=x_offset, y=search_y)
             _logger.debug(f"Searching for top center hole at {search_point}")
             # Search for top center hole (tc)
-            tc_edges = img_stack.find_edges(search_start=search_point,
-                                            direction='-z', z_avg=0.05)
+            tc_edges = series.find_edges(search_start=search_point,
+                                         direction='-z', z_avg=0.05)
 
-            tc_holes = img_stack.holes_by_width(edges=tc_edges,
-                                                width=HN_H_DIAM,
-                                                tolerance=0.1)
+            tc_holes = series.holes_by_width(edges=tc_edges,
+                                             width=HN_H_DIAM,
+                                             tolerance=0.1)
 
             tc_holes_s = sorted(tc_holes, key=attrgetter('z'), reverse=True)
 
@@ -660,27 +663,27 @@ class CouchTop(object):
                 # (HN_H_DIAM +- some margin)  If that works, it will try to
                 # find corresponding points that are within the sensible
                 # distances for each other hole.
-                tp_edges = img_stack.find_edges(search_start=tp_search_start,
-                                                direction='-z', z_avg=0.05)
-                tn_edges = img_stack.find_edges(search_start=tn_search_start,
-                                                direction='-z', z_avg=0.05)
-                bp_edges = img_stack.find_edges(search_start=bp_search_start,
-                                                direction='-z', z_avg=0.05)
-                bn_edges = img_stack.find_edges(search_start=bn_search_start,
-                                                direction='-z', z_avg=0.05)
+                tp_edges = series.find_edges(search_start=tp_search_start,
+                                             direction='-z', z_avg=0.05)
+                tn_edges = series.find_edges(search_start=tn_search_start,
+                                             direction='-z', z_avg=0.05)
+                bp_edges = series.find_edges(search_start=bp_search_start,
+                                             direction='-z', z_avg=0.05)
+                bn_edges = series.find_edges(search_start=bn_search_start,
+                                             direction='-z', z_avg=0.05)
 
-                tp_holes = img_stack.holes_by_width(edges=tp_edges,
-                                                    width=HN_H_DIAM,
-                                                    tolerance=1.)
-                tn_holes = img_stack.holes_by_width(edges=tn_edges,
-                                                    width=HN_H_DIAM,
-                                                    tolerance=1.)
-                bp_holes = img_stack.holes_by_width(edges=bp_edges,
-                                                    width=HN_H_DIAM,
-                                                    tolerance=1.)
-                bn_holes = img_stack.holes_by_width(edges=bn_edges,
-                                                    width=HN_H_DIAM,
-                                                    tolerance=1.)
+                tp_holes = series.holes_by_width(edges=tp_edges,
+                                                 width=HN_H_DIAM,
+                                                 tolerance=1.)
+                tn_holes = series.holes_by_width(edges=tn_edges,
+                                                 width=HN_H_DIAM,
+                                                 tolerance=1.)
+                bp_holes = series.holes_by_width(edges=bp_edges,
+                                                 width=HN_H_DIAM,
+                                                 tolerance=1.)
+                bn_holes = series.holes_by_width(edges=bn_edges,
+                                                 width=HN_H_DIAM,
+                                                 tolerance=1.)
 
                 agz = attrgetter('z')
 
@@ -749,15 +752,15 @@ class CouchTop(object):
             _logger.debug("Creating cls._board_offset")
             cls._board_offset = {}
 
-        _logger.debug(f"Storing cls._board_offset[img_stack] = {offset}")
-        cls._board_offset[str(img_stack)] = offset.copy()
+        _logger.debug(f"Storing cls._board_offset[series] = {offset}")
+        cls._board_offset[series.UID] = offset.copy()
 
         return offset
 
-    def get_hn_offset(self, img_stack, couch_y, ct_z):
+    def get_hn_offset(self, series, couch_y, ct_z):
         _logger.debug(f"Had {ct_z=}, find x_offset")
         try:
-            return self.get_board_offset_from_image(img_stack, couch_y)
+            return self.get_board_offset_from_image(series, couch_y)
         except (TypeError, ValueError, Warning):
             # Couldn't find the board, so make sure we don't remove any
             # of the couch by setting the bottom edge to be at the
@@ -768,7 +771,7 @@ class CouchTop(object):
 
         offset = point()
         try:
-            offset.x = guess_board_x_center(img_stack, couch_y)
+            offset.x = guess_board_x_center(series, couch_y)
         except (TypeError, ValueError):
             _logger.warning("Couldn't center H&N board position.")
 
@@ -780,19 +783,18 @@ class CouchTop(object):
     def get_offset(self, structure_set, couch_y, icase, force_z=None):
         if force_z is None:
             examination = structure_set.OnExamination
-            img_stack = CT_Image_Stack(examination.Series[0].ImageStack)
+            series = Image_Series(examination.Series[0])
 
             couch_bb = self.boundingbox
 
-            ct = img_stack
-            ct_z = guess_couchtop_z(img_stack)
+            ct_z = guess_couchtop_z(series)
 
             # Default to move the bottom of the board to the bottom of the CT
             offset = point.Z() * (couch_bb.upper.z +
-                                  (ct.minz - couch_bb.lower.z))
+                                  (series.minz - couch_bb.lower.z))
 
             if self.isHN:
-                offset = self.get_hn_offset(img_stack, couch_y, ct_z)
+                offset = self.get_hn_offset(series, couch_y, ct_z)
             elif ct_z:
                 offset.z = ct_z
             else:
@@ -818,7 +820,7 @@ class CouchTop(object):
         _logger.debug(f"{offset=}")
         return offset
 
-    def move_rois(self, structure_set, couch_y=CT_Couch_TopY,
+    def move_rois(self, structure_set, couch_y=CT_DEFAULT_Y,
                   match_z=True, force_z=None, icase=None):
 
         # Invalidate to force recomputing of boundingbox
@@ -978,11 +980,13 @@ def addcouchtoexam(icase, examination=None, plan=None,
                    patient_db=get_current("PatientDB"), remove_existing=False,
                    **kwargs):
 
-    if not examination:
-        examination = icase.PatientModel.Examinations[0]
+    if plan:
+        examination = plan.GetTotalDoseStructureSet().OnExamination
+    elif not examination:
+        examination = pick_exam()
 
     structure_set = icase.PatientModel.StructureSets[examination.Name]
-    img_stack = CT_Image_Stack(examination.Series[0].ImageStack)
+    series = Image_Series(examination.Series[0])
 
     tops = CouchTopCollection(use_known=True)
 
@@ -1000,21 +1004,21 @@ def addcouchtoexam(icase, examination=None, plan=None,
         top_height = kwargs['couch_y']
         del kwargs['couch_y']
     else:
-        top_height = get_or_find_table_height(img_stack, icase=icase)
-    isHN = test_for_hn(icase, img_stack)
+        top_height = get_or_find_table_height(series, icase=icase)
+
+    isHN = test_for_hn(icase, series)
+
     machine = ''
     try:
         if plan is None:
             _logger.warning("No plan selected, trying first plan.")
-            plan = icase.TreatmentPlans[0]
+            plan = pick_plan()
         machine = plan.BeamSets[0].MachineReference.MachineName
         _logger.debug(f"Found machine {machine = }")
     except (ArgumentOutOfRangeException, IndexError):
         _logger.info("Couldn't determine machine. "
                      "Guessing based on the current case.")
         machine = guess_machine(icase)
-    except Exception as e:
-        _logger.exception(e)
 
     top = tops.get_first_top(machine=machine, isHN=isHN)
 
