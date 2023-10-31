@@ -2,6 +2,8 @@ from enum import IntEnum
 import sys
 from copy import deepcopy
 import logging as _logging
+from uuid import uuid4
+from dataclasses import dataclass
 _logger = _logging.getLogger(__name__)
 
 
@@ -17,7 +19,7 @@ def helperoverride(function):
 
 try:
     from System.Windows import MessageBox as _MessageBox
-    from System.Windows.Controls import Button
+    from System.Windows.Controls import Button, TextBlock, DockPanel, Label
     from System import ArgumentOutOfRangeException, InvalidOperationException
     from System.IO import InvalidDataException
 except ImportError:
@@ -212,7 +214,9 @@ finally:
             cls = type(self)
             if not self._instance:
                 (args, kwargs) = self.my_args
-                if cls._clsinstance or cls._blocked:
+                if cls._blocked:
+                    self._instance = cls._dummyclass(*args, **kwargs)
+                elif cls._clsinstance and cls._clsinstance != self:
                     self._instance = cls._dummyclass(*args, **kwargs)
                 else:
                     self._instance = cls._realclass(*args, **kwargs)
@@ -332,15 +336,35 @@ try:
     from pydicom import dcmread, uid
 except ImportError:
     # If we don't have pydicom in this env, can't do any of this. Just return a
-    # dummy function that returns none.
+    # dummy function that returns a usuable but empty dataset like object.
+    class _DUMMY_DCM:
+        Modality = 'CT'
+
+        def __getattr__(self, attr):
+            # Suppress AttributeErrors in favor of empty returns.  Only usefuly
+            # because this is a dummy class for debugging or when running
+            # without dcmread.
+            return None
+
     @helperoverride
     def dcmread(*args, **kwargs):
-        return None
+        DUMMY_DCM = _DUMMY_DCM()
+        return DUMMY_DCM
 
     @helperoverride
     class uid:
-        def generate_uid(self, prefix=None, entropy_sources=[]):
-            raise NotImplementedError(self.__name__)
+
+        @staticmethod
+        def generate_uid(prefix=None, entropy_sources=[]):
+            # Very short and not entirely compliant UID generator
+
+            uid = uuid4().int
+            if prefix:
+                prefix = f'{prefix}'[0:32]
+                prefix[31] = '0'
+                return f'{prefix}.{uid}'[0:62]
+
+            return f'2.25.{uid}'[0:62]
 
 
 def rs_hasattr(obj, attrname):
@@ -389,6 +413,36 @@ def set_module_opts(**kwargs):
         set_module_opt(opt, val)
 
 
+class ListItemPanel(DockPanel):
+    _button = None
+    _label = None
+
+    def __init__(self, obj_name_in, button_click, index,
+                 is_current=False, is_default=False, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+
+        self._button = Button()
+        _logger.debug(f"{obj_name_in=}")
+        if is_current:
+            self._button.Tag = 'current'
+        if is_default:
+            self._button.IsDefault = True
+
+        # Use a TextBlock to get around _ being an accelerator in buttons.
+        obj_text = TextBlock()
+        obj_text.Text = f"{obj_name_in}"
+        self._button.Content = obj_text
+
+        self._button.Click += button_click
+
+        self._label = Label()
+        self._label.Content = f"_{index}"
+        self._label.Target = self._button
+
+        self.Children.Add(self._label)
+        self.Children.Add(self._button)
+
+
 class ListSelectorDialog(RayWindow):
     _XAML = """
 <Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
@@ -407,7 +461,10 @@ class ListSelectorDialog(RayWindow):
 
     <Window.Resources>
         <Style TargetType="{x:Type StackPanel}">
-            <Setter Property="Margin" Value="5"/>
+            <Setter Property="Margin" Value="0"/>
+        </Style>
+        <Style TargetType="{x:Type Label}">
+            <Setter Property="VerticalAlignment" Value="Center"/>
         </Style>
         <Style TargetType="{x:Type Button}">
             <Setter Property="Margin" Value="5"/>
@@ -434,7 +491,6 @@ class ListSelectorDialog(RayWindow):
     <StackPanel Background="#FFE6E6E6" MinHeight="20" Margin="0">
         <Label x:Name="PickerLabel" Content="Select one:"/>
         <StackPanel x:Name="ListPanel">
-            <Button x:Name="ButtonList" Content="ListName" />
         </StackPanel>
     </StackPanel>
 </Window>
@@ -453,24 +509,57 @@ class ListSelectorDialog(RayWindow):
 
         self._list_in = {obj_name(obj): obj for obj in list_in}
 
+        self._results = results
+
         _logger.debug(f"{results=}")
-        for obj in self._list_in:
+        for i, obj_name_in in enumerate(self._list_in):
+            is_current = self.obj_matches('current', obj_name_in)
+            is_default = self.obj_matches('default', obj_name_in)
+            obj_listitem = ListItemPanel(obj_name_in, self.List_Click,
+                                         i+1, is_current, is_default)
+
+            self.ListPanel.Children.Add(obj_listitem)
+            continue
+
             obj_button = Button()
-            _logger.debug(f"{obj=}")
-            if results.get('current', None) in [obj, self._list_in[obj]]:
-                _logger.debug(f"Found current {obj=}")
+            _logger.debug(f"{obj_name_in=}")
+            if self.obj_matches('current', obj_name_in):
                 obj_button.Tag = 'current'
-            if results.get('default', None) in [obj, self._list_in[obj]]:
+            if self.obj_matches('default', obj_name_in):
                 obj_button.IsDefault = True
-            obj_button.Content = f"{obj}"
+
+            # Use a TextBlock to get around _ being an accelerator in buttons.
+            obj_text = TextBlock()
+            obj_text.Text = f"{obj_name_in}"
+            obj_button.Content = obj_text
+
             obj_button.Click += self.List_Click
             self.ListPanel.Children.Add(obj_button)
 
-        self._results = results
+    def obj_matches(self, feature, obj_name_in):
+        if feature not in self._results:
+            return False
+
+        if self._results[feature] in [obj_name_in, self._list_in[obj_name_in]]:
+            _logger.debug(f"Found {feature} {obj_name_in=}")
+            return True
+        elif isinstance(self._results[feature], str):
+            # This was a simple check, not present, so false.
+            return False
+
+        try:
+            for matcher in self._results[feature]:
+                if matcher in [obj_name_in, self._list_in[obj_name_in]]:
+                    return True
+        except (IndexError, ValueError, TypeError):
+            return False
+
+        return False
 
     def List_Click(self, caller, event):
         try:
-            self._results['Selected'] = self._list_in[caller.Content]
+            text_child = caller.Content.Text
+            self._results['Selected'] = self._list_in[text_child]
             self.DialogResult = True
         finally:
             self.Close()
@@ -577,6 +666,140 @@ def pick_plan(plans=None, include_current=True, default=None):
                                  if include_current
                                  or obj_name(plan) != obj_name(current)]
     return pick_list(plans, "Select Plan:", current=current, default=default)
+
+
+def pick_machine(current=None, default=None, match_on=None,
+                 exclude_current=False):
+    def_filter_dict = {'IsLinac': True,
+                       'HasMlc': True,
+                       'Name': None,
+                       'IsDynamicArcCapable': True,
+                       'IsDynamicMlcCapable': True,
+                       'IsStaticArcCapable': True,
+                       'CommissionedBy': None,
+                       'IsIonMachine': False,
+                       'IsCyberKnifeLinac': False,
+                       'HasRangeShifters': False,
+                       'IsElectronCapable': None
+                       }
+
+    _logger.debug(f"{locals()}")
+    if current is not None:
+        current = {current} if isinstance(current, str) else set(current)
+    else:
+        current = {}
+
+    if not match_on:
+        match_on = [k for k in def_filter_dict
+                    if def_filter_dict[k] is not None]
+
+    machine_db = get_current("MachineDB")
+    mach_query = machine_db.QueryCommissionedMachineInfo
+
+    currentmachinfo = []
+    for mach in current:
+        currentmachinfo += mach_query(Filter={'Name': mach})
+
+    currentmachinfo = (currentmachinfo + [def_filter_dict])[0]
+
+    filter_dict = {k: currentmachinfo[k] for k in match_on}
+
+    machines_info_list = mach_query(Filter=filter_dict)
+
+    machines = [MachineQueryResult(**m) for m in machines_info_list]
+
+    if exclude_current:
+        for machine in machines:
+            if machine.Name in current:
+                machines.remove(machine)
+
+    return pick_list(machines, "Select machine:",
+                     current=current, default=default)
+
+
+@dataclass
+class MachineQueryResult:
+    Name: str
+    NameAliases: str
+    IsDeprecated: bool
+    IsCommissioned: bool
+    CommissionTime: object
+    IsTemplate: bool
+    IsDynamicArcCapable: bool
+    IsDynamicMlcCapable: bool
+    IsStaticArcCapable: bool
+    CommissionedBy: str
+    HasMlc: bool
+    IsLinac: bool
+    IsIonMachine: bool
+    IsCyberKnifeLinac: bool
+    HasRangeShifters: bool
+    IsElectronCapable: bool
+    SupportsOcularGaze: bool
+    PatientSupportType: str
+    IsRbeIncluded: bool = False
+
+    @property
+    def Alias(self):
+        return self.NameAliases
+
+
+class Machine:
+    _machine = None
+    _energies = None
+
+    def __init__(self, machine):
+        self._machine = machine
+        if self._machine.PhotonBeamQualities is None:
+            raise NotImplementedError("Only support for photons machines.")
+
+    @property
+    def photon_energies(self):
+        if not self._energies:
+            # Sort by increasing nominal energy, this will let us pull the
+            # nearest value not above the current energy
+            energies = sorted(self._machine.PhotonBeamQualities,
+                              key=lambda e: e.NominalEnergy)
+            self._energies = {(f'{int(e.NominalEnergy)}'
+                               if e.FluenceMode is None else
+                               f'{int(e.NominalEnergy)} {e.FluenceMode}'): e
+                              for e in energies}
+        return self._energies
+
+    def closest_energy(self, energy):
+        energies = self.photon_energies
+        if energy in energies:
+            return energy
+
+        nominal_energy = int(energy.rstrip(" FFF"))
+        isfff = 'FFF' in energy
+
+        if isfff:
+            if f'{nominal_energy}' in energies:
+                return f'{nominal_energy}'
+        else:
+            fff_energy = f'{energy} FFF'
+            if fff_energy in energies:
+                return fff_energy
+
+        try:
+            return [e for e in energies if isfff == ('FFF' in e)][0]
+        except IndexError:
+            return next(iter(energies))
+
+
+def get_machine(machine_name):
+    mach_db = get_current("MachineDB")
+    return Machine(mach_db.GetTreatmentMachine(machineName=machine_name))
+
+
+def pick_site(sites=None, current=None, default=None):
+    if sites is None:
+        site_settings = get_current("ClinicDB").GetSiteSettings()
+        site_defs = site_settings.DefaultSettings.BodySiteDefinitions
+        sites = [obj_name(site) for site in site_defs]
+
+    return pick_list(sites, "Select site:", current=current, default=default)
 
 
 def dup_object_param_values(obj_in, obj_out,
