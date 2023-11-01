@@ -640,7 +640,8 @@ def pick_list(obj_list, description="Select One", current=None, default=None):
         return None
 
 
-def pick_exam(exams=None, include_current=True, default=None):
+def pick_exam(exams=None, include_current=True, default=None,
+              message="Select Exam:"):
     try:
         current = obj_name(get_current("Examination"))
     except InvalidDataException:
@@ -651,10 +652,11 @@ def pick_exam(exams=None, include_current=True, default=None):
                                  get_current("Case").Examinations
                                  if include_current
                                  or obj_name(exam) != obj_name(current)]
-    return pick_list(exams, "Select Exam:", current=current, default=default)
+    return pick_list(exams, message, current=current, default=default)
 
 
-def pick_plan(plans=None, include_current=True, default=None):
+def pick_plan(plans=None, include_current=True, default=None,
+              message="Select Plan:"):
     try:
         current = obj_name(get_current("Plan"))
     except InvalidDataException:
@@ -665,11 +667,11 @@ def pick_plan(plans=None, include_current=True, default=None):
                                  get_current("Case").TreatmentPlans
                                  if include_current
                                  or obj_name(plan) != obj_name(current)]
-    return pick_list(plans, "Select Plan:", current=current, default=default)
+    return pick_list(plans, message, current=current, default=default)
 
 
 def pick_machine(current=None, default=None, match_on=None,
-                 exclude_current=False):
+                 exclude_current=False, message="Select machine:"):
     def_filter_dict = {'IsLinac': True,
                        'HasMlc': True,
                        'Name': None,
@@ -713,7 +715,7 @@ def pick_machine(current=None, default=None, match_on=None,
             if machine.Name in current:
                 machines.remove(machine)
 
-    return pick_list(machines, "Select machine:",
+    return pick_list(machines, message,
                      current=current, default=default)
 
 
