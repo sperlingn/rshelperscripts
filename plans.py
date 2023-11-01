@@ -480,7 +480,7 @@ def copy_rx(beamset_in, beamset_out):
 
     if (rx_out.PrescriptionDoseReferences and
             len(rx_out.PrescriptionDoseReferences) > 0):
-        for rx in rx_out:
+        for rx in rx_out.PrescriptionDoseReferences:
             rx.DeletePrescriptionDoseReference()
 
     for rx in doserefs:
