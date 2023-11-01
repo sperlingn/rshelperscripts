@@ -1,6 +1,8 @@
 from .external import (dcmread, uid, SuspendCompositeAction, obj_name,
                        get_unique_name)
 
+from datetime import datetime
+
 import tempfile
 
 import os
@@ -44,6 +46,8 @@ _IMPORT_PARAMS = {
 
 _EXCLUDED_ROI_TYPES = ['Support', 'Bolus']
 
+SERIES_ADD = 31415
+
 
 def duplicate_exam(patient, icase, exam_in, copy_structs=True,
                    exam_name_out=None):
@@ -65,6 +69,10 @@ def duplicate_exam(patient, icase, exam_in, copy_structs=True,
 
         study_uid = None
         patient_id = None
+
+        # TODO: Modify InstanceCreationDate, InstancCreationTime, SeriesNumber,
+        # etc. as well.
+
         for imgn, fn in enumerate(os.listdir(tempdir)):
             full_fn = os.path.join(tempdir, fn)
             if os.path.isfile(full_fn):
@@ -81,6 +89,17 @@ def duplicate_exam(patient, icase, exam_in, copy_structs=True,
 
                 img.SeriesInstanceUID = new_series_uid
                 img.SOPInstanceUID = new_image_uid
+                img.SeriesNumber += SERIES_ADD
+
+                # Indicate that this is a SECONDARY image (from NMEA: "is the
+                #   image a SECONDARY Image; an image created after the initial
+                #   patient examination"
+                img.ImageType[1] = "SECONDARY"
+
+                now = datetime.now()
+
+                img.InstanceCreationDate = now.strftime('%Y%m%d')
+                img.InstanceCreationTime = now.strftime('%H%M%S.%f')
 
                 _logger.info(f"Writing {full_fn} with "
                              f"new SOPUID {new_image_uid}")
