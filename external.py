@@ -620,9 +620,11 @@ def pick_list(obj_list, description="Select One", current=None, default=None):
                'default': default,
                'description': description}
 
-    # Don't bother with a dialog if there is only one choice.
+    # Don't bother with a dialog if there is only one, or no choice(s).
     if len(obj_list) == 1:
         return next(iter(obj_list))
+    elif len(obj_list) == 0:
+        return None
 
     dlg = ListSelectorDialog(obj_list, results)
     try:
