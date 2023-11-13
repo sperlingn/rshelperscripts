@@ -697,8 +697,9 @@ class Image_Series():
     img_stack = None
     UID = ''
     DICOM = None
+    structure_sets = None
 
-    def __init__(self, series):
+    def __init__(self, series, structure_sets=None):
         self._series = series
 
         self.UID = series.ImportedDicomUID
@@ -706,6 +707,14 @@ class Image_Series():
         self.img_stack = CT_Image_Stack(series.ImageStack)
 
         self.DICOM = self.img_stack.DICOM
+
+        if structure_sets is not None:
+            try:
+                self.structure_sets = [s for s in structure_sets]
+            except TypeError:
+                self.structure_sets = [structure_sets]
+        else:
+            self.structure_sets = []
 
         if self.DICOM.Modality not in VALID_MODALITIES:
             raise NotImplementedError("Unknown/unhandled modality "
