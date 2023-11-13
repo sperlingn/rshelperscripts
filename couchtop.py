@@ -11,7 +11,7 @@ from .dosetools import invalidate_structureset_doses
 
 from .external import (get_current, CompositeAction, Show_YesNo,
                        ArgumentOutOfRangeException,
-                       pick_machine, pick_plan, pick_exam)
+                       pick_list, pick_plan, pick_exam)
 
 from .roi import ROI_Builder, ROI
 
@@ -56,7 +56,7 @@ MACHINE_SEARCHES = {'Edge':     [['brain', False],  # Brain usually on Edge
 
 PATIENT_ORIENTATIONS = {'TrueBeam': ['FFS']}
 
-DEFAULT_MACHINE = 'TrueBeam'
+DEFAULT_MACHINE = None
 
 # Tabletops of known offsets.  Surface ROI is the roi whose upper surface is
 # at the height of the CT tabletop.  ROI_Names will be completed when brought
@@ -68,7 +68,7 @@ KNOWN_TOPS = {
          'tx_machines': 'TrueBeam'},
     'Edge Couch Model':
         {'surface_roi': 'Outer Shell - Edge',
-         'default_offset': {'x': 0., 'y': 0., 'z': 0.},
+         'default_offset': {'x': 0., 'y': 0., 'z': -1.86},
          'tx_machines': 'Edge'},
     'Edge Head & Neck Model':
         {'surface_roi': 'Outer Shell - Edge H&N',
@@ -135,14 +135,32 @@ struct DCM_TAG_01F7_1027
 
 # DICOM Search
 PRIV_01F7_1027 = (0x01F7, 0x1027)
-HEURISTIC_OFFSET = 1526
+HEURISTIC_OFFSET = 1497
+
+# Couch coordinate point name
+COUCH_COORD_Z_POINT = 'CouchZMax'
 
 
 def guess_couchtop_z(series):
     """
     Guesses the z coordinate of the couch top based on specific dicom tags.
     Tags don't currently populate correctly, so work on reading them by hand.
+
     """
+    try:
+        # First try to see if there is a point named "CouchZMax" in any of the
+        # structure sets associated with the series.
+        for structs in series.structure_sets:
+            if COUCH_COORD_Z_POINT in structs.PoiGeometries.Keys:
+                couch_z_pt = structs.PoiGeometries[COUCH_COORD_Z_POINT]
+                _logger.debug(f"Found point {COUCH_COORD_Z_POINT} "
+                              f"at {couch_z_pt.Point}")
+                return couch_z_pt.Point.z
+    except (TypeError, ValueError, IndexError, AttributeError):
+        _logger.debug("Couldn't find the point, "
+                      "or ran into some other issue, trying DICOM",
+                      exc_info=True)
+
     try:
 
         img_dcm = series.DICOM
@@ -218,10 +236,10 @@ def guess_machine(icase):
                     return mach
                 else:  # Answer might be overriden later, set and continue
                     machine = mach
-    return pick_machine(default=machine).Alias
+    return machine
 
 
-def test_for_hn(icase, series):
+def test_for_hn(icase, series, prompt=False):
     """
     Test the case for if it is likely to have a H&N board used.
     Simple tests first (e.g. if the case is a pelvis, return False) followed by
@@ -233,7 +251,7 @@ def test_for_hn(icase, series):
         return True
     elif icase.BodySite in NON_HN_SITES:
         return False
-    else:
+    elif prompt:
         # More complicated, need to test if there is a HN board.
         # For now, warn using warnings
         msg = ("Couldn't determine if this is a H&N patient from site '{}'\n"
@@ -245,6 +263,7 @@ def test_for_hn(icase, series):
         _logger.warning("Testing for H&N board by searching image is not "
                         f"implemented yet.  Treatment Site {icase.BodySite} "
                         "is insufficient for use in determination.")
+
     return False
 
 
@@ -265,7 +284,9 @@ def find_table_height(series, resolution=None, search_start=None,
     threshold = -200
 
     # For any prone images, get the other side of the edge
-    is_rising = series.ColumnDirection.y == -1
+    # is_rising = series.ColumnDirection.y == -1
+    is_rising = True
+    default *= series.ColumnDirection.y
 
     try:
         edge_pairs = series.find_edges(search_start=search_start,
@@ -279,7 +300,8 @@ def find_table_height(series, resolution=None, search_start=None,
         for edge_pair in edge_pairs:
             edge = edge_pair[not is_rising]
             # Only return if it seems reasonable.
-            if abs(CT_DEFAULT_Y - edge.y) <= CT_DEFAULT_Y_TOLERANCE:
+            _logger.debug(f"{abs(default - edge.y) =}")
+            if abs(default - edge.y) <= CT_DEFAULT_Y_TOLERANCE:
                 return edge.y
 
     except (ValueError, IndexError, SystemError, TypeError):
@@ -362,9 +384,11 @@ class CouchTop(object):
             if structure_set:
                 self.update()
 
+            _logger.debug(f"Built couch {Name}: {self!s}")
+
         except SystemError:
             # No template in patient_db by this name.
-            pass
+            raise Warning(f"Could not find {self.Name} in patient_db.")
 
     def update_params(self, **kwargs):
         # Filter against those parameters that we have deemed safe to update.
@@ -442,7 +466,7 @@ class CouchTop(object):
             return offset
         except Exception as e:
             _logger.info(str(e), exc_info=True)
-            return self.default_offset
+            return point(self.default_offset)
 
     @property
     def boundingbox(self):
@@ -463,13 +487,27 @@ class CouchTop(object):
 
         pt_pos = structure_set.OnExamination.PatientPosition
 
+        top_offset = self.Top_offset
+        bb_offset = point()
+
         if pt_pos[2] == 'S':
-            pt = offset + self.Top_offset - point.Y() * self.boundingbox.lower
+            bb_offset.y -= self.boundingbox.lower.y
         elif pt_pos[2] == 'P':
-            pt = offset + self.Top_offset - point.Y() * self.boundingbox.upper
+            bb_offset.y -= self.boundingbox.upper.y
+            top_offset.y *= -1
+
+        # Feet first vs head first...
+        if pt_pos[0] == 'H':
+            bb_offset.z -= self.boundingbox.upper.z
+        else:
+            # FFx: use couch_bb.lower.z
+            bb_offset.z -= self.boundingbox.lower.z
+            top_offset.z *= -1
+
+        pt = offset + top_offset + bb_offset
+
         _logger.debug("Transform calculation.\n\t"
-                      f'pt = {offset} + {self.Top_offset} - '
-                      f'point.Y() * {self.boundingbox.lower}\n\t'
+                      f'{bb_offset=}\n\t{top_offset=}\n\t{pt_pos=}\t\n'
                       f'{pt = }')
 
         transform = AffineMatrix(pt)
@@ -783,7 +821,7 @@ class CouchTop(object):
     def get_offset(self, structure_set, couch_y, icase, force_z=None):
         if force_z is None:
             examination = structure_set.OnExamination
-            series = Image_Series(examination.Series[0])
+            series = Image_Series(examination.Series[0], structure_set)
 
             couch_bb = self.boundingbox
 
@@ -809,7 +847,6 @@ class CouchTop(object):
                                   f"{SITE_SHIFT[icase.BodySite]}")
                     offset.z += SITE_SHIFT[icase.BodySite]
 
-            offset -= point.Z() * couch_bb.upper.z
         else:
             try:
                 offset = point(z=float(force_z))
@@ -836,12 +873,12 @@ class CouchTop(object):
 
         self._apply_transform(structure_set, transform)
 
-    def remove_from_case(self, remove_existing=True):
+    def remove_from_case(self, geometry_only=True):
         if self.roi_geometries:
             with CompositeAction("Remove {self.Name} couch from case."):
                 for geom in self.roi_geometries.values():
                     if geom.PrimaryShape:
-                        if remove_existing:
+                        if geometry_only:
                             geom.DeleteGeometry()
                         else:
                             geom.OfRoi.DeleteRoi()
@@ -871,6 +908,21 @@ class CouchTop(object):
     def __setitem__(self, item, value):
         return setattr(self, item, value)
 
+    def __str__(self):
+        return (f'{type(self)}: '
+                f'Name: {self.Name}\n'
+                f'ROI_Names: {self.ROI_Names}\n'
+                f'default_offset: {self.default_offset}\n'
+                f'tx_machines: {self.tx_machines}\n'
+                f'surface_roi: {self.surface_roi}\n'
+                f'_tx_machines_set: {self._tx_machines_set}\n'
+                f'_board_offset: {self._board_offset}\n'
+                f'roi_geometries: {self.roi_geometries}\n'
+                f'template: {self.template}\n'
+                f'_bounding_box: {self._bounding_box}\n'
+                f'inActiveSet: {self.inActiveSet}\n'
+                f'isValid: {self.isValid}\n')
+
 
 class CouchTopCollection(object):
     Tops = None
@@ -896,6 +948,8 @@ class CouchTopCollection(object):
 
         self.update()
 
+        _logger.debug(f"Built tops. {self.HN_Tops=}; {self.Normal_Tops=}")
+
     @property
     def keys(self):
         return self._keys
@@ -910,10 +964,10 @@ class CouchTopCollection(object):
         return self
 
     def __iter__(self):
-        return iter(self.Tops)
+        return iter(self.Tops.values())
 
-    def __next__(self):
-        return self.Tops.__next__()
+    def __len__(self):
+        return len(self.Tops)
 
     # TODO: Implement later
     def Add(self, newitem):
@@ -925,6 +979,7 @@ class CouchTopCollection(object):
         self._keys = sorted([top for top in self.Tops
                              if self.Tops[top].isValid])
         for topname, top in self.Tops.items():
+            _logger.debug(f"Updating {topname} in sets.")
             if top.isValid:
                 if structure_set:
                     self[topname].update(structure_set)
@@ -944,10 +999,10 @@ class CouchTopCollection(object):
     def get_tops_in_structure_set(self, structure_set):
         plan_roi_names = set(structure_set.RoiGeometries.Keys)
         models_present = []
-        for top_name in self:
-            self[top_name].update(structure_set)
-            if set(self[top_name]['ROI_Names']) <= plan_roi_names:
-                models_present.append(self[top_name])
+        for top in self:
+            top.update(structure_set)
+            if set(top['ROI_Names']) <= plan_roi_names:
+                models_present.append(top)
 
         # If we have any H&N tops in the model, we should only return the
         # subset that are H&N tops. (elminates name collisions for non H&N
@@ -960,6 +1015,8 @@ class CouchTopCollection(object):
 
     def get_first_top(self, machine, isHN=False):
         topset = self.HN_Tops if isHN else self.Normal_Tops
+        _logger.debug(f"Finding top from {topset=} to match"
+                      f" {machine=} ({isHN=})")
         if not machine:
             # Don't have a machine name, just return the first top. (Maybe a
             # bad guess?)
@@ -976,9 +1033,33 @@ class CouchTopCollection(object):
         return str(self)
 
 
+def determine_top(icase, plan, tops, isHN):
+    machine = None
+    try:
+        if plan is None and len(icase.TreatmentPlans) > 0:
+            _logger.warning("No plan selected, trying first plan.")
+            plan = pick_plan()
+        machine = plan.BeamSets[0].MachineReference.MachineName
+        _logger.debug(f"Found machine {machine = }")
+    except (ArgumentOutOfRangeException, IndexError, AttributeError, Warning):
+        _logger.info("Couldn't determine machine. "
+                     "Guessing based on the current case.")
+        machine = guess_machine(icase)
+
+    if machine is None:
+        top = pick_list(tops, 'Select table to use:')
+    else:
+        top = tops.get_first_top(machine=machine, isHN=isHN)
+
+    if top is None:
+        raise Warning(f"No tops found to match machine: {machine}.")
+
+    return top
+
+
 def addcouchtoexam(icase, examination=None, plan=None,
-                   patient_db=get_current("PatientDB"), remove_existing=False,
-                   **kwargs):
+                   patient_db=get_current("PatientDB"), remove_existing=True,
+                   geometry_only=True, **kwargs):
 
     if plan:
         examination = plan.GetTotalDoseStructureSet().OnExamination
@@ -998,7 +1079,7 @@ def addcouchtoexam(icase, examination=None, plan=None,
             invalidate_structureset_doses(icase=icase,
                                           structure_set=structure_set)
             while existing_tops:
-                existing_tops.pop().remove_from_case(remove_existing)
+                existing_tops.pop().remove_from_case(geometry_only)
 
     if 'couch_y' in kwargs:
         top_height = kwargs['couch_y']
@@ -1008,19 +1089,7 @@ def addcouchtoexam(icase, examination=None, plan=None,
 
     isHN = test_for_hn(icase, series)
 
-    machine = ''
-    try:
-        if plan is None:
-            _logger.warning("No plan selected, trying first plan.")
-            plan = pick_plan()
-        machine = plan.BeamSets[0].MachineReference.MachineName
-        _logger.debug(f"Found machine {machine = }")
-    except (ArgumentOutOfRangeException, IndexError):
-        _logger.info("Couldn't determine machine. "
-                     "Guessing based on the current case.")
-        machine = guess_machine(icase)
-
-    top = tops.get_first_top(machine=machine, isHN=isHN)
+    top = determine_top(icase, plan, tops, isHN)
 
     with CompositeAction(f"Add {top.Name} to case"):
         top.add_to_case(icase, examination, top_height, **kwargs)
