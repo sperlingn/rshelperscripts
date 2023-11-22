@@ -1,5 +1,5 @@
 from .external import (Show_OK, Show_YesNo, MB_Icon, MB_Result,
-                       CompositeAction, Show_Warning)
+                       CompositeAction, Show_Warning, obj_name)
 from .case_comment_data import (set_validation_comment,
                                 beamset_validation_checkraise)
 from .collision_rois import check_collision
@@ -16,31 +16,121 @@ JAW_VALIDATION_STR = 'Jaw'
 COLLISION_VALIDATION_STR = 'Collision'
 
 
+class SegmentViolation:
+    seg = None
+    violations = None
+    _VIOLATION_TYPES = ['Jaw', 'MLC']
+
+    def __init__(self, seg, violations):
+        self.seg = seg
+        self.violations = {t: False for t in self._VIOLATION_TYPES}
+        self.add_violation(violations)
+
+    def set_violations(self, violation_type, status=True, clear=True):
+        new_violations = f'{violation_type}'.lower()
+        for t in self._VIOLATION_TYPES:
+            if t.lower() in new_violations:
+                self.violations[t] = bool(status)
+            elif clear:
+                self.violations[t] = False
+
+    def add_violation(self, violation_type):
+        self.set_violations(violation_type, clear=False)
+
+    def remove_violation(self, violation_type):
+        self.set_violations(violation_type, status=False, clear=False)
+
+    def __str__(self):
+        return f'{self.seg.SegmentNumber+1}'
+
+    def fix_jaw(self):
+        if self.violations['Jaw']:
+            gap_x = JAW_LIMIT - (self.seg.JawPositions[1]
+                                 - self.seg.JawPositions[0])
+            gap_y = JAW_LIMIT - (self.seg.JawPositions[3]
+                                 - self.seg.JawPositions[2])
+            jp = [j for j in self.seg.JawPositions]
+            if gap_x > 0:
+                jp[0] -= gap_x / 2
+                jp[1] += gap_x / 2
+
+            if gap_y > 0:
+                jp[2] -= gap_y / 2
+                jp[3] += gap_y / 2
+
+            self.seg.JawPositions = jp
+
+            self.remove_violation('jaw')
+
+    def fix_violations(self):
+        if self.violations['Jaw']:
+            self.fix_jaw()
+        if self.violations['MLC']:
+            self.fix_mlc()
+
+    def fix_mlc(self):
+        raise NotImplementedError
+
+    def __bool__(self):
+        return any(self.violations.values())
+
+
+class ViolationDict(dict):
+    def add_violation(self, beam, segment, violation_type):
+        if beam not in self:
+            self[beam] = {}
+
+        if segment in self[beam]:
+            self[beam][segment].add_violation(violation_type)
+        else:
+            self[beam][segment] = SegmentViolation(segment, violation_type)
+
+    def __str__(self):
+        return '\n'.join(['Violation: Beam [{}]: CP [{}]'.format(
+            obj_name(beam), ', '.join([f'{s}' for s in segments.values()]))
+            for beam, segments in self.items()])
+
+    def __bool__(self):
+        if len(self) > 0:
+            # Might not actually have violations, check all.
+            return any([self[b][v] for b in self for v in self[b]])
+
+        return False
+
+    def fix_violations(self):
+        with CompositeAction(f"Fixing Violations ({self})"):
+            for beam in self:
+                for segment in self[beam]:
+                    self[beam][segment].fix_violations()
+
+
 def check_jaw(beam_set):
-    violations = {}
+    violations = ViolationDict()
     for beam in beam_set.Beams:
         for seg in beam.Segments:
-            if abs(seg.JawPositions[0] - seg.JawPositions[1]) < JAW_LIMIT:
-                if beam.Name not in violations:
-                    violations[beam.Name] = []
-                violations[beam.Name].append(f'{seg.SegmentNumber+1}')
+            if min(abs(seg.JawPositions[0] - seg.JawPositions[1]),
+                   abs(seg.JawPositions[2] - seg.JawPositions[3])) < JAW_LIMIT:
+                violations.add_violation(beam, seg, 'Jaw')
 
-    output = ['Violation: Beam [{}]: CP [{}]'.format(beam, ', '.join(segments))
-              for beam, segments in violations.items()]
-
-    return output
+    return violations
 
 
 def fix_jaw(beam_set):
     with CompositeAction('Fix Jaw Gap'):
         for beam in beam_set.Beams:
             for seg in beam.Segments:
-                gap_d = JAW_LIMIT - (seg.JawPositions[1] - seg.JawPositions[0])
-                if gap_d > 0:
-                    jp = (seg.JawPositions[0] - (gap_d/2),
-                          seg.JawPositions[0] + (gap_d/2),
-                          seg.JawPositions[2], seg.JawPositions[3])
-                    seg.JawPositions = jp
+                gap_x = JAW_LIMIT - (seg.JawPositions[1] - seg.JawPositions[0])
+                gap_y = JAW_LIMIT - (seg.JawPositions[3] - seg.JawPositions[2])
+                jp = [j for j in seg.JawPositions]
+                if gap_x > 0:
+                    jp[0] -= gap_x / 2
+                    jp[1] += gap_x / 2
+
+                if gap_y > 0:
+                    jp[2] -= gap_y / 2
+                    jp[3] += gap_y / 2
+
+                seg.JawPositions = jp
 
 
 def validate_jaw(plan, beam_set, silent=False, fix_errors=False):
@@ -50,8 +140,8 @@ def validate_jaw(plan, beam_set, silent=False, fix_errors=False):
         if not errorlist:
             Show_OK("No collisions.", "Jaw collision status", ontop=True)
         else:
-            outtext = 'Failed Jaw validation on the following CPs:\n'
-            outtext += '\n'.join(errorlist)
+            outtext = ('Failed Jaw validation on the following CPs: '
+                       f'{errorlist}\n')
 
             if fix_errors:
                 outtext += '\nFixing jaw gaps.'
@@ -66,10 +156,10 @@ def validate_jaw(plan, beam_set, silent=False, fix_errors=False):
     if not errorlist:
         set_validation_comment(plan, beam_set, JAW_VALIDATION_STR)
     elif fix_errors:
-        fix_jaw(beam_set)
+        errorlist.fix_violations()
         set_validation_comment(plan, beam_set, JAW_VALIDATION_STR)
     else:
-        # Didn't fix, so remove Jaw passing if it is here.
+        _logger.debug("Didn't fix, so remove Jaw passing if it is here.")
         set_validation_comment(plan, beam_set, JAW_VALIDATION_STR, False)
 
 
