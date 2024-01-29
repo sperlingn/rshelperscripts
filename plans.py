@@ -103,10 +103,10 @@ _TECHNIQUES_SET = {
 
 _BEAM_PHOTON_STATIC_PARAM_MAPPING = {
     'BeamQualityId': True,
-    'CyberKnifeCollimationType': None,
-    'CyberKnifeNodeSetName': None,
-    'CyberKnifeRampVersion': None,
-    'CyberKnifeAllowIncreasedPitchCorrection': None,
+#    'CyberKnifeCollimationType': None,
+#    'CyberKnifeNodeSetName': None,
+#    'CyberKnifeRampVersion': None,
+#    'CyberKnifeAllowIncreasedPitchCorrection': None,
     'IsocenterData': cll.get_iso_from_beam,
     'Name': True,
     'Description': True,
@@ -118,10 +118,10 @@ _BEAM_PHOTON_STATIC_PARAM_MAPPING = {
 }
 
 _BEAM_PHOTON_STATIC_DEFAULT = {
-    'CyberKnifeCollimationType': None,
-    'CyberKnifeNodeSetName': None,
-    'CyberKnifeRampVersion': None,
-    'CyberKnifeAllowIncreasedPitchCorrection': None
+    #'CyberKnifeCollimationType': None,
+    #'CyberKnifeNodeSetName': None,
+    #'CyberKnifeRampVersion': None,
+    #'CyberKnifeAllowIncreasedPitchCorrection': None
 }
 
 _BEAM_PHOTON_ARC_PARAM_MAPPING = {
@@ -581,6 +581,8 @@ def copy_beams(plan_in, beamset_in, plan_out, beamset_out,
                                              _ARC_BEAM_OPT_PARAM_MAPPING)
 
             acp_out.EditArcBasedBeamOptimizationSettings(**arc_params)
+        else:
+            exclude_segments = True
 
     # Need to generate Segments for all beams at once or it will fail.
     if exclude_segments:
@@ -659,6 +661,8 @@ def copy_opt_functions(opt_in, opt_out):
     opt_beamsets_out.append(None)
 
     # Copy Constituent Functions
+    if opt_in.Objective is None:
+        return
     for fn_in in opt_in.Objective.ConstituentFunctions:
         params = params_from_optimization(fn_in)
 
@@ -718,7 +722,8 @@ def copy_opt_parameters(optparam_in, optparam_out):
         if len(rob_in.PatientGeometryUncertaintyParameters.Examinations) > 0:
             # TODO: For robustness, we will need to call
             # optparam_out.SaveRobustnessParameters to set the examinations.
-            raise NotImplementedError
+            #raise NotImplementedError
+            pass
     except (TypeError, AttributeError):
         pass
 

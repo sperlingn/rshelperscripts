@@ -239,14 +239,15 @@ def guess_machine(icase):
     return machine
 
 
-def test_for_hn(icase, series, prompt=False):
+def test_for_hn(icase, series, prompt=True):
     """
     Test the case for if it is likely to have a H&N board used.
     Simple tests first (e.g. if the case is a pelvis, return False) followed by
         potentially searching for indicators of H&N board from tabletop
         position.
-        Also test for patient orientation.  If FFS, assume it isn't H&N.
     """
+    # TODO: Also test for patient orientation.  If FFS, assume it isn't H&N.
+
     if icase.BodySite in HN_SITES:
         return True
     elif icase.BodySite in NON_HN_SITES:
@@ -805,9 +806,10 @@ class CouchTop(object):
             # bottom of the CT.
             _logger.warning("Couldn't find H&N board position."
                             "  Board should be positioned manually.")
+            return point(0, 0, ct_z if ct_z is not None else 0)
             pass
 
-        offset = point()
+        offset = point(0, 0, 0)
         try:
             offset.x = guess_board_x_center(series, couch_y)
         except (TypeError, ValueError):
@@ -853,7 +855,8 @@ class CouchTop(object):
             except (ValueError, TypeError):
                 offset = point(force_z)
 
-        offset += point.Y() * couch_y
+        if couch_y is not None:
+            offset += point.Y() * couch_y
         _logger.debug(f"{offset=}")
         return offset
 
