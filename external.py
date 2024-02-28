@@ -18,11 +18,19 @@ def helperoverride(function):
 
 
 try:
-    from System.Windows import MessageBox as _MessageBox
+    from System.Windows import (MessageBox as _MessageBox,
+                                DragDrop, DragDropEffects)
     from System.Windows.Controls import (Button, TextBlock, DockPanel, Label,
                                          ListBoxItem)
     from System import ArgumentOutOfRangeException, InvalidOperationException
     from System.IO import InvalidDataException
+    from System.Windows.Input import Keyboard, ModifierKeys
+
+    ValScale = {getattr(ModifierKeys, 'None'): 1,
+                ModifierKeys.Control: 5,
+                ModifierKeys.Shift: 10,
+                ModifierKeys.Control | ModifierKeys.Shift: 50}
+
 except ImportError:
 
     # TODO: Work to include a QT or other based dialog? Right now we can assume
@@ -589,27 +597,54 @@ class BeamReorderDialog(RayWindow):
         <Style TargetType="{x:Type Label}">
             <Setter Property="VerticalAlignment" Value="Center"/>
         </Style>
+        <Style TargetType="{x:Type Button}">
+            <Setter Property="Margin" Value="5" />
+            <Setter Property="Padding" Value="5" />
+        </Style>
         <Style TargetType="{x:Type ListBoxItem}">
             <Setter Property="Height" Value="42"/>
             <Setter Property="BorderBrush" Value="Black"/>
+            <Setter Property="AllowDrop" Value="true"/>
         </Style>
+        <LinearGradientBrush x:Key="TopHalf" EndPoint="0.5,0.5"
+                             StartPoint="0.5,0">
+            <GradientStop Color="White" Offset="0"/>
+            <GradientStop Color="#FF7C7C7C" Offset="0.05"/>
+            <GradientStop Color="#FFF9F9F9" Offset="0.95"/>
+            <GradientStop Color="White" Offset="1"/>
+        </LinearGradientBrush>
+        <LinearGradientBrush x:Key="BottomHalf" EndPoint="0.5,1"
+                             StartPoint="0.5,0.5">
+            <GradientStop Color="White" Offset="0"/>
+            <GradientStop Color="#FFF9F9F9" Offset="0.05"/>
+            <GradientStop Color="#FF7C7C7C" Offset="0.95"/>
+            <GradientStop Color="White" Offset="1"/>
+        </LinearGradientBrush>
     </Window.Resources>
     <Window.TaskbarItemInfo>
         <TaskbarItemInfo ProgressState="Normal" ProgressValue="50"/>
     </Window.TaskbarItemInfo>
 
-    <StackPanel Background="#FFE6E6E6" MinHeight="20" Margin="0">
-        <StackPanel Orientation="Horizontal">
+    <StackPanel Background="#FFE6E6E6" MinHeight="20">
+        <StackPanel Orientation="Horizontal" Margin="5">
             <Label x:Name="PickerLabel" Content="Beam Start Number:"/>
             <TextBox x:Name="FirstBeamNo" MinWidth="20">1</TextBox>
         </StackPanel>
         <StackPanel Orientation="Horizontal">
             <StackPanel x:Name="BeamNumbers">
                 <Label>1</Label>
+                <Label>2</Label>
             </StackPanel>
-            <ListBox x:Name="BeamList" AllowDrop="True">
-                <ListBoxItem>Test</ListBoxItem>
+            <ListBox x:Name="BeamList">
+                <ListBoxItem Background="{DynamicResource TopHalf}"
+                             Content="Test" />
+                <ListBoxItem Background="{DynamicResource BottomHalf}"
+                             Content="Test2" />
             </ListBox>
+        </StackPanel>
+        <StackPanel Orientation="Horizontal" HorizontalAlignment="Center">
+            <Button IsCancel="True" Content="_Cancel"/>
+            <Button x:Name="BtnOK" IsDefault="True" Content="_OK" />
         </StackPanel>
     </StackPanel>
 </Window>
@@ -617,8 +652,11 @@ class BeamReorderDialog(RayWindow):
 
     BeamList = None  # ListBox
     BeamNumbers = None  # StackPanel
+    BtnOK = None  # Button (OK)
+    FirstBeamNo = None  # Text
     _results = None  # dict for results
     _list_in = None  # list of list_in
+    _dragstartpoint = None  # When dragging, screen coordinates of start
 
     def __init__(self, list_in, results):
         self.LoadComponent(self._XAML)
@@ -627,6 +665,8 @@ class BeamReorderDialog(RayWindow):
             self.PickerLabel.Content = results['description']
 
         self.BeamList.Items.Clear()
+        self.BeamList.PreviewMouseMove += self.BeamOrderPreviewMouseMove
+
         self.BeamNumbers.Children.Clear()
 
         self._list_in = {obj_name(obj): obj for obj in list_in}
@@ -639,6 +679,9 @@ class BeamReorderDialog(RayWindow):
             lowest_n = 1
 
         self.FirstBeamNo.Text = f"{lowest_n}"
+        self.FirstBeamNo.PreviewMouseWheel += self.PreviewMouseWheelHandler
+
+        self.BtnOK.Click += self.OK_Click
 
         self._results = results
 
@@ -654,23 +697,135 @@ class BeamReorderDialog(RayWindow):
             lbi = ListBoxItem()
             lbi.Content = f"{obj_name_in}"
 
+            lbi.PreviewMouseLeftButtonDown += self.BeamOrder_PrevMLBDown
+            lbi.Drop += self.BeamOrder_Drop
+            lbi.DragOver += self.BeamOrder_DragOver
+            lbi.DragLeave += self.BeamOrder_DragLeave
+
             _logger.debug(f"{lbi=}, {obj_name_in=}")
 
             self.BeamList.Items.Add(lbi)
 
     def FirstBeamChanged(self, caller, event):
-        _logger.debug(f"FirstBeamChanged: {caller=} {event=}")
+        _logger.debug(f"{caller=} {event=}")
         try:
-            newval = int(caller.Text)
+            newval = max(int(caller.Text), 1)
+            caller.Text = f'{newval}'
+            _logger.debug(f"{newval=}")
             for i, label in enumerate(self.BeamNumbers.Children):
-                label.Contents = f"{newval + i}"
+                _logger.debug(f"{label=}, {label.Content=}")
+                label.Content = f"{newval + i}"
         except (ValueError):
-            _logger.error()
+            _logger.error("Error with number")
 
-    def List_Click(self, caller, event):
+    def BeamOrderPreviewMouseMove(self, caller, event):
+        if event.LeftButton:
+            try:
+                _logger.debug(f"{caller=} {event=}")
+                pos_in_caller = event.GetPosition(caller)
+                pos_in_screen = event.GetPosition(None)
+                ddx = pos_in_screen.X - self._dragstartpoint.X
+                ddy = pos_in_screen.Y - self._dragstartpoint.Y
+                if pow(pow(ddx, 2) + pow(ddy, 2), 0.5) < 5:
+                    _logger.debug(f"drag more. {ddx=} {ddy=}")
+                    return
+
+                source = event.OriginalSource
+                while (source is not None and
+                       not isinstance(source, ListBoxItem)):
+                    source = source.VisualParent
+
+                src_index = self.BeamList.Items.IndexOf(source)
+
+                _logger.debug(f"{source=} {src_index=}")
+
+                if source is None:
+                    return
+
+                DragDrop.DoDragDrop(source, src_index, DragDropEffects.Move)
+            except (AttributeError, ValueError):
+                pass
+
+    def BeamOrder_DragOver(self, caller, event):
+        event.Effects = getattr(DragDropEffects, 'None')
+        src_index = event.Data.GetData(int)
+        if src_index != self.BeamList.Items.IndexOf(caller):
+            event.Effects = DragDropEffects.Move
+
+            drop_pos = event.GetPosition(caller)
+            _logger.debug(f"{drop_pos.X=} {drop_pos.Y=} {caller.Height=}")
+
+            if drop_pos.Y < caller.Height/2:
+                # Top Half
+                res_name = "TopHalf"
+            else:
+                res_name = "BottomHalf"
+
+            caller.SetResourceReference(ListBoxItem.BackgroundProperty,
+                                        res_name)
+
+    def BeamOrder_DragLeave(self, caller, event):
+        caller.ClearValue(ListBoxItem.BackgroundProperty)
+
+    def BeamOrder_Drop(self, caller, event):
+        _logger.debug(f"{caller=} {event=}")
+
+        if isinstance(caller, ListBoxItem):
+            caller.ClearValue(ListBoxItem.BackgroundProperty)
+            src_index = event.Data.GetData(int)
+            dest_index = self.BeamList.Items.IndexOf(caller)
+
+            drop_pos = event.GetPosition(caller)
+
+            if drop_pos.Y < caller.Height/2:
+                # Top Half, insert "source" before "caller"
+                pass
+            else:
+                # Insert "source" after "caller"
+                dest_index += 1
+
+            _logger.debug(f"{drop_pos.X=} {drop_pos.Y=} "
+                          f"{src_index=} {dest_index=}")
+
+            if src_index == dest_index or src_index < 0 or dest_index < 0:
+                _logger.debug(f"Dropped on self, no change")
+                return
+
+            if src_index < dest_index:
+                # Moving from above current position, we remove first so we
+                # will end up moving the destination up.
+                dest_index -= 1
+
+            src_control = self.BeamList.Items[src_index]
+            self.BeamList.Items.RemoveAt(src_index)
+            self.BeamList.Items.Insert(dest_index, src_control)
+
+    def BeamOrder_PrevMLBDown(self, caller, event):
+        self._dragstartpoint = event.GetPosition(None)
+
+    def PreviewMouseWheelHandler(self, caller, event):
         try:
-            text_child = caller.Content.Text
-            self._results['Selected'] = self._list_in[text_child]
+            scale = ValScale.get(Keyboard.Modifiers, 1)
+            valdelta = int(event.Delta * scale / 120.)
+
+            if hasattr(caller, "Value"):
+                caller.Value += valdelta
+            elif hasattr(caller, "Text"):
+                caller.Text = '%d' % (int(caller.Text) + valdelta)
+
+        except ValueError:
+            pass
+        except Exception as ex:
+            _logger.exception(ex)
+
+    def OK_Click(self, caller, event):
+        try:
+            beam_start = int(self.FirstBeamNo.Text)
+            for i, item in enumerate(self.BeamList.Items):
+                beam = self._list_in[item.Content]
+                # Add 100 to the number so we don't break things.
+                beam.Number = 100 + beam_start + i
+
             self.DialogResult = True
         finally:
             self.Close()
