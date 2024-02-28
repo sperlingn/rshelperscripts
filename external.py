@@ -565,6 +565,127 @@ class ListSelectorDialog(RayWindow):
             self.Close()
 
 
+class BeamReorderDialog(RayWindow):
+    XAML = """
+<Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+        xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+        xmlns:System="clr-namespace:System;assembly=mscorlib"
+        Title="Select List"
+        SizeToContent="WidthAndHeight"
+        Foreground="#FF832F2F"
+        Topmost="True"
+        WindowStartupLocation="CenterOwner"
+        ResizeMode="NoResize"
+        WindowStyle="ThreeDBorderWindow" MinWidth="192"
+        FontSize="24">
+
+    <Window.Resources>
+        <Style TargetType="{x:Type StackPanel}">
+            <Setter Property="Margin" Value="0"/>
+        </Style>
+        <Style TargetType="{x:Type Label}">
+            <Setter Property="VerticalAlignment" Value="Center"/>
+        </Style>
+        <Style TargetType="{x:Type ListBoxItem}">
+            <Setter Property="Height" Value="42"/>
+            <Setter Property="BorderBrush" Value="Black"/>
+        </Style>
+    </Window.Resources>
+    <Window.TaskbarItemInfo>
+        <TaskbarItemInfo ProgressState="Normal" ProgressValue="50"/>
+    </Window.TaskbarItemInfo>
+
+    <StackPanel Background="#FFE6E6E6" MinHeight="20" Margin="0">
+        <StackPanel Orientation="Horizontal">
+            <Label x:Name="PickerLabel" Content="Beam Start Number:"/>
+            <TextBox x:Name="FirstBeamNo" MinWidth="20">1</TextBox>
+        </StackPanel>
+        <StackPanel Orientation="Horizontal">
+            <StackPanel>
+                <Label>1</Label>
+                <Label>2</Label>
+            </StackPanel>
+            <ListBox x:Name="BeamList" AllowDrop="True">
+                <ListBoxItem>Test</ListBoxItem>
+                <ListBoxItem>Test</ListBoxItem>
+            </ListBox>
+        </StackPanel>
+    </StackPanel>
+</Window>
+
+"""
+    ListPanel = None  # StackPanel
+    _results = None  # dict for results
+    _list_in = None  # list of list_in
+
+    def __init__(self, list_in, results):
+        self.LoadComponent(self._XAML)
+
+        if 'description' in results:
+            self.PickerLabel.Content = results['description']
+
+        self.ListPanel.Children.Clear()
+
+        self._list_in = {obj_name(obj): obj for obj in list_in}
+
+        self._results = results
+
+        _logger.debug(f"{results=}")
+        for i, obj_name_in in enumerate(self._list_in):
+            is_current = self.obj_matches('current', obj_name_in)
+            is_default = self.obj_matches('default', obj_name_in)
+            obj_listitem = ListItemPanel(obj_name_in, self.List_Click,
+                                         i+1, is_current, is_default)
+
+            self.ListPanel.Children.Add(obj_listitem)
+            continue
+
+            obj_button = Button()
+            _logger.debug(f"{obj_name_in=}")
+            if self.obj_matches('current', obj_name_in):
+                obj_button.Tag = 'current'
+            if self.obj_matches('default', obj_name_in):
+                obj_button.IsDefault = True
+
+            # Use a TextBlock to get around _ being an accelerator in buttons.
+            obj_text = TextBlock()
+            obj_text.Text = f"{obj_name_in}"
+            obj_button.Content = obj_text
+
+            obj_button.Click += self.List_Click
+            self.ListPanel.Children.Add(obj_button)
+
+    def obj_matches(self, feature, obj_name_in):
+        if feature not in self._results:
+            return False
+
+        if self._results[feature] in [obj_name_in, self._list_in[obj_name_in]]:
+            _logger.debug(f"Found {feature} {obj_name_in=}")
+            return True
+        elif isinstance(self._results[feature], str):
+            # This was a simple check, not present, so false.
+            return False
+
+        try:
+            for matcher in self._results[feature]:
+                if matcher in [obj_name_in, self._list_in[obj_name_in]]:
+                    return True
+        except (IndexError, ValueError, TypeError):
+            return False
+
+        return False
+
+    def List_Click(self, caller, event):
+        try:
+            text_child = caller.Content.Text
+            self._results['Selected'] = self._list_in[text_child]
+            self.DialogResult = True
+        finally:
+            self.Close()
+
+
 def obj_name(obj, name_identifier_object='.', strict=False):
     if isinstance(obj, str):
         return obj
@@ -791,9 +912,61 @@ class Machine:
         except IndexError:
             return next(iter(energies))
 
+    def get_beam_presentation_vals(self, beam):
+        """
+        Translates beam Iec61217 standard values into the presentation format
+        specified in the beam commissioning for each collimating component.
 
-def get_machine(machine_name):
+        beam: Object presenting beam parameters
+
+        returns: Dict containing values.
+        """
+        retdict = {'Gantry': None,
+                   'GantryStop': None,
+                   'Collimator': None,
+                   'Couch': None}
+
+        # Gantry
+        if self._machine.GantryScale == 'Iec61217':
+            retdict['Gantry'] = beam.GantryAngle
+            retdict['GantryStop'] = beam.ArcStopGantryAngle
+        elif self._machine.GantryScale == 'VarianStandard':
+            retdict['Gantry'] = (-beam.GantryAngle + 180) % 360
+            retdict['GantryStop'] = (-beam.ArcStopGantryAngle + 180) % 360
+        else:
+            raise NotImplementedError(
+                f"Unsupported Scale '{self._machine.GantryScale}'")
+
+        # Collimator
+        if self._machine.CollimatorScale == 'Iec61217':
+            retdict['Collimator'] = beam.Segments[0].CollimatorAngle
+        elif self._machine.CollimatorScale == 'VarianStandard':
+            retdict['Collimator'] = (-beam.Segments[0].CollimatorAngle + 180) % 360
+        else:
+            raise NotImplementedError(
+                f"Unsupported Scale '{self._machine.CollimatorScale}'")
+
+        # Couch
+        if self._machine.CouchScale == 'Iec61217':
+            retdict['Couch'] = beam.CouchRotationAngle
+        elif self._machine.CouchScale == 'VarianIec':
+            retdict['Couch'] = (-beam.CouchRotationAngle) % 360
+        elif self._machine.CouchScale == 'VarianStandard':
+            retdict['Couch'] = (-beam.CouchRotationAngle + 180) % 360
+        else:
+            raise NotImplementedError(
+                f"Unsupported Scale '{self._machine.CouchScale}'")
+
+        return retdict
+
+
+def get_machine(machine_ref):
     mach_db = get_current("MachineDB")
+    try:
+        machine_name = f'{machine_ref.MachineReference.MachineName}'
+    except AttributeError:
+        machine_name = f'{machine_ref}'
+
     return Machine(mach_db.GetTreatmentMachine(machineName=machine_name))
 
 
