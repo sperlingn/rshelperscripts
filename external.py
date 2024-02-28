@@ -687,6 +687,7 @@ class BeamReorderDialog(RayWindow):
 
         _logger.debug(f"{results=}")
         for i, obj_name_in in enumerate(self._list_in):
+            beam = self._list_in[obj_name_in]
             n_label = Label()
             n_label.Content = f"{lowest_n + i}"
 
@@ -695,7 +696,23 @@ class BeamReorderDialog(RayWindow):
             self.BeamNumbers.Children.Add(n_label)
 
             lbi = ListBoxItem()
-            lbi.Content = f"{obj_name_in}"
+
+            beam_desc = (f"{beam.BeamQualityId}MV "
+                         f"T{beam.CouchRotationAngle:0.0f} "
+                         f"G{beam.GantryAngle:0.0f}")
+
+            if beam.ArcStopGantryAngle is not None:
+                beam_desc += f"-{beam.ArcStopGantryAngle:0.0f}"
+
+            lbi.Tag = f"{obj_name_in}"
+            lbi.Content = f"{obj_name_in} [{beam_desc}]"
+
+            tt = (f"X1: {beam.InitialJawPositions[0]:0.1f}\n"
+                  f"X2: {beam.InitialJawPositions[1]:0.1f}\n"
+                  f"Y1: {beam.InitialJawPositions[2]:0.1f}\n"
+                  f"Y2: {beam.InitialJawPositions[3]:0.1f}")
+
+            lbi.ToolTip = tt
 
             lbi.PreviewMouseLeftButtonDown += self.BeamOrder_PrevMLBDown
             lbi.Drop += self.BeamOrder_Drop
@@ -788,7 +805,7 @@ class BeamReorderDialog(RayWindow):
                           f"{src_index=} {dest_index=}")
 
             if src_index == dest_index or src_index < 0 or dest_index < 0:
-                _logger.debug(f"Dropped on self, no change")
+                _logger.debug("Dropped on self, no change")
                 return
 
             if src_index < dest_index:
@@ -822,7 +839,7 @@ class BeamReorderDialog(RayWindow):
         try:
             beam_start = int(self.FirstBeamNo.Text)
             for i, item in enumerate(self.BeamList.Items):
-                beam = self._list_in[item.Content]
+                beam = self._list_in[item.Tag]
                 # Add 100 to the number so we don't break things.
                 beam.Number = 100 + beam_start + i
 
