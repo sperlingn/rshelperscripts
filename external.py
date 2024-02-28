@@ -19,7 +19,8 @@ def helperoverride(function):
 
 try:
     from System.Windows import MessageBox as _MessageBox
-    from System.Windows.Controls import Button, TextBlock, DockPanel, Label
+    from System.Windows.Controls import (Button, TextBlock, DockPanel, Label,
+                                         ListBoxItem)
     from System import ArgumentOutOfRangeException, InvalidOperationException
     from System.IO import InvalidDataException
 except ImportError:
@@ -566,7 +567,7 @@ class ListSelectorDialog(RayWindow):
 
 
 class BeamReorderDialog(RayWindow):
-    XAML = """
+    _XAML = """
 <Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
@@ -603,20 +604,19 @@ class BeamReorderDialog(RayWindow):
             <TextBox x:Name="FirstBeamNo" MinWidth="20">1</TextBox>
         </StackPanel>
         <StackPanel Orientation="Horizontal">
-            <StackPanel>
+            <StackPanel x:Name="BeamNumbers">
                 <Label>1</Label>
-                <Label>2</Label>
             </StackPanel>
             <ListBox x:Name="BeamList" AllowDrop="True">
-                <ListBoxItem>Test</ListBoxItem>
                 <ListBoxItem>Test</ListBoxItem>
             </ListBox>
         </StackPanel>
     </StackPanel>
 </Window>
-
 """
-    ListPanel = None  # StackPanel
+
+    BeamList = None  # ListBox
+    BeamNumbers = None  # StackPanel
     _results = None  # dict for results
     _list_in = None  # list of list_in
 
@@ -626,56 +626,46 @@ class BeamReorderDialog(RayWindow):
         if 'description' in results:
             self.PickerLabel.Content = results['description']
 
-        self.ListPanel.Children.Clear()
+        self.BeamList.Items.Clear()
+        self.BeamNumbers.Children.Clear()
 
         self._list_in = {obj_name(obj): obj for obj in list_in}
+
+        self.FirstBeamNo.TextChanged += self.FirstBeamChanged
+
+        try:
+            lowest_n = min([beam.Number for beam in list_in])
+        except (ValueError, AttributeError):
+            lowest_n = 1
+
+        self.FirstBeamNo.Text = f"{lowest_n}"
 
         self._results = results
 
         _logger.debug(f"{results=}")
         for i, obj_name_in in enumerate(self._list_in):
-            is_current = self.obj_matches('current', obj_name_in)
-            is_default = self.obj_matches('default', obj_name_in)
-            obj_listitem = ListItemPanel(obj_name_in, self.List_Click,
-                                         i+1, is_current, is_default)
+            n_label = Label()
+            n_label.Content = f"{lowest_n + i}"
 
-            self.ListPanel.Children.Add(obj_listitem)
-            continue
+            _logger.debug(f"{n_label=}")
 
-            obj_button = Button()
-            _logger.debug(f"{obj_name_in=}")
-            if self.obj_matches('current', obj_name_in):
-                obj_button.Tag = 'current'
-            if self.obj_matches('default', obj_name_in):
-                obj_button.IsDefault = True
+            self.BeamNumbers.Children.Add(n_label)
 
-            # Use a TextBlock to get around _ being an accelerator in buttons.
-            obj_text = TextBlock()
-            obj_text.Text = f"{obj_name_in}"
-            obj_button.Content = obj_text
+            lbi = ListBoxItem()
+            lbi.Content = f"{obj_name_in}"
 
-            obj_button.Click += self.List_Click
-            self.ListPanel.Children.Add(obj_button)
+            _logger.debug(f"{lbi=}, {obj_name_in=}")
 
-    def obj_matches(self, feature, obj_name_in):
-        if feature not in self._results:
-            return False
+            self.BeamList.Items.Add(lbi)
 
-        if self._results[feature] in [obj_name_in, self._list_in[obj_name_in]]:
-            _logger.debug(f"Found {feature} {obj_name_in=}")
-            return True
-        elif isinstance(self._results[feature], str):
-            # This was a simple check, not present, so false.
-            return False
-
+    def FirstBeamChanged(self, caller, event):
+        _logger.debug(f"FirstBeamChanged: {caller=} {event=}")
         try:
-            for matcher in self._results[feature]:
-                if matcher in [obj_name_in, self._list_in[obj_name_in]]:
-                    return True
-        except (IndexError, ValueError, TypeError):
-            return False
-
-        return False
+            newval = int(caller.Text)
+            for i, label in enumerate(self.BeamNumbers.Children):
+                label.Contents = f"{newval + i}"
+        except (ValueError):
+            _logger.error()
 
     def List_Click(self, caller, event):
         try:
@@ -941,7 +931,8 @@ class Machine:
         if self._machine.CollimatorScale == 'Iec61217':
             retdict['Collimator'] = beam.Segments[0].CollimatorAngle
         elif self._machine.CollimatorScale == 'VarianStandard':
-            retdict['Collimator'] = (-beam.Segments[0].CollimatorAngle + 180) % 360
+            retdict['Collimator'] = (-beam.Segments[0].CollimatorAngle
+                                     + 180) % 360
         else:
             raise NotImplementedError(
                 f"Unsupported Scale '{self._machine.CollimatorScale}'")
