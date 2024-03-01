@@ -120,9 +120,9 @@ class MB_Options(IntEnum):
     ServiceNotification = 2097152
 
 
-def _Show_MB(*args, ontop=False):
+def _Show_MB(message, caption, *args, ontop=False):
     opt = MB_Options.DefaultDesktopOnly if ontop else MB_Options.None_
-    res = _MessageBox.Show(*args, opt)
+    res = _MessageBox.Show(f"{message}", f"{caption}", *args, opt)
     try:
         return MB_Result(res)
     except ValueError:
