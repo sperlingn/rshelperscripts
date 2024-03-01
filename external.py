@@ -707,12 +707,35 @@ class BeamReorderDialog(RayWindow):
             lbi.Tag = f"{obj_name_in}"
             lbi.Content = f"{obj_name_in} [{beam_desc}]"
 
-            tt = (f"X1: {beam.InitialJawPositions[0]:0.1f}\n"
-                  f"X2: {beam.InitialJawPositions[1]:0.1f}\n"
-                  f"Y1: {beam.InitialJawPositions[2]:0.1f}\n"
-                  f"Y2: {beam.InitialJawPositions[3]:0.1f}")
+            try:
+                """
+                #  This is really slow, but still the fastest way.
 
-            lbi.ToolTip = tt
+                # Simplified to just using the initial jaw positions if they
+                # exist, and if not the first CP.
+                jaw_extremes = [(min(j), max(j)) for j in
+                                zip(*[s.JawPositions for s in beam.Segments])]
+                tt = (f"X1: {jaw_extremes[0][0]:0.1f}\n"
+                      f"X2: {jaw_extremes[1][1]:0.1f}\n"
+                      f"Y1: {jaw_extremes[2][0]:0.1f}\n"
+                      f"Y2: {jaw_extremes[3][1]:0.1f}")
+                """
+
+                if beam.InitialJawPositions is not None:
+                    tt = (f"X1: {beam.InitialJawPositions[0]:0.1f}\n"
+                          f"X2: {beam.InitialJawPositions[1]:0.1f}\n"
+                          f"Y1: {beam.InitialJawPositions[2]:0.1f}\n"
+                          f"Y2: {beam.InitialJawPositions[3]:0.1f}")
+                else:
+                    tt = ("Segment 1 Jaw:\n"
+                          f"X1: {beam.Segments[0].JawPositions[0]:0.1f}\n"
+                          f"X2: {beam.Segments[0].JawPositions[1]:0.1f}\n"
+                          f"Y1: {beam.Segments[0].JawPositions[2]:0.1f}\n"
+                          f"Y2: {beam.Segments[0].JawPositions[3]:0.1f}")
+
+                lbi.ToolTip = tt
+            except (ValueError, TypeError, AttributeError):
+                pass
 
             lbi.PreviewMouseLeftButtonDown += self.BeamOrder_PrevMLBDown
             lbi.Drop += self.BeamOrder_Drop
@@ -739,7 +762,6 @@ class BeamReorderDialog(RayWindow):
         if event.LeftButton:
             try:
                 _logger.debug(f"{caller=} {event=}")
-                pos_in_caller = event.GetPosition(caller)
                 pos_in_screen = event.GetPosition(None)
                 ddx = pos_in_screen.X - self._dragstartpoint.X
                 ddy = pos_in_screen.Y - self._dragstartpoint.Y
