@@ -749,7 +749,7 @@ class BeamReorderDialog(RayWindow):
                           f"Y2: {beam.Segments[0].JawPositions[3]:0.1f}")
 
                 lbi.ToolTip = tt
-            except (ValueError, TypeError, AttributeError):
+            except (ValueError, TypeError, AttributeError, ArgumentOutOfRangeException):
                 pass
 
             lbi.PreviewMouseLeftButtonDown += self.BeamOrder_PrevMLBDown
@@ -1248,11 +1248,15 @@ class Machine:
                 f"Unsupported Scale '{self._machine.GantryScale}'")
 
         # Collimator
+        try:
+            collimator = beam.Segments[0].CollimatorAngle
+        except ArgumentOutOfRangeException:
+            collimator = beam.InitialCollimatorAngle
+
         if self._machine.CollimatorScale == 'Iec61217':
-            retdict['Collimator'] = beam.Segments[0].CollimatorAngle
+            retdict['Collimator'] = collimator
         elif self._machine.CollimatorScale == 'VarianStandard':
-            retdict['Collimator'] = (-beam.Segments[0].CollimatorAngle
-                                     + 180) % 360
+            retdict['Collimator'] = (-collimator + 180) % 360
         else:
             raise NotImplementedError(
                 f"Unsupported Scale '{self._machine.CollimatorScale}'")
