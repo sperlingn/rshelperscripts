@@ -44,7 +44,72 @@ LIMITING_MAX_FNTYPES = ('MaxDose', 'UniformDose', 'MaxDVH')
 # number of "Preparatory" iterations for cycles as well.
 MINIPERCYCLE = 15
 
-__OPT_XAML = """
+ModifierKeys_None = 0
+
+ValScale = {ModifierKeys_None: 1,
+            ModifierKeys.Control: 5,
+            ModifierKeys.Shift: 10,
+            ModifierKeys.Control | ModifierKeys.Shift: 50}
+
+
+def dosefn_str(optfn):
+    dfp = optfn.DoseFunctionParameters
+    try:
+        if dfp.FunctionType == 'MinDvh':
+            fmts = [optfn.ForRegionOfInterest.Name, dfp.PercentVolume,
+                    dfp.DoseLevel, dfp.Weight]
+            return '{} D{:.0f}%<={} cGy (w: {})'.format(*fmts)
+    except AttributeError:
+        return '{}'.format(optfn.ForRegionOfInterest.Name)
+
+
+class ObjectiveError(ValueError):
+    # Custom error to indicate that optimization failed due to a dose objective
+    # conflict.
+    pass
+
+
+class MinDVHFunctionsControl():
+    _isSelected = True
+    _dvhtext = ""
+    _dvh_fn = None
+
+    def __init__(self, dvhfunction=None):
+        logger.debug("{}".format(str(self.__class__)))
+        if dvhfunction:
+            try:
+                self.IsSelected = True
+                self.DVHText = dosefn_str(dvhfunction)
+                self._dvh_fn = dvhfunction
+            except AttributeError:
+                pass
+
+    def OnPropertyChanged(self, prop):
+        logger.debug("Changed {} in {}".format(str(prop), str(self)))
+
+    @property
+    def IsSelected(self):
+        return self._isSelected
+
+    @IsSelected.setter
+    def IsSelected(self, value):
+        self._isSelected = bool(value)
+        self.OnPropertyChanged("IsSelected")
+
+    @property
+    def DVHText(self):
+        return self._dvhtext
+
+    @DVHText.setter
+    def DVHText(self, value):
+        self._dvhtext = str(value)
+        self.OnPropertyChanged("DVHText")
+
+
+class BulkOptDialogWindow(RayWindow):
+    outdict = None
+    dvhfuncs = None
+    __OPT_XAML = """
 <Window
     xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
     xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
@@ -112,76 +177,10 @@ __OPT_XAML = """
         </StackPanel>
     </StackPanel>
 </Window>
-"""
-
-ModifierKeys_None = 0
-
-ValScale = {ModifierKeys_None: 1,
-            ModifierKeys.Control: 5,
-            ModifierKeys.Shift: 10,
-            ModifierKeys.Control | ModifierKeys.Shift: 50}
-
-
-def dosefn_str(optfn):
-    dfp = optfn.DoseFunctionParameters
-    try:
-        if dfp.FunctionType == 'MinDvh':
-            fmts = [optfn.ForRegionOfInterest.Name, dfp.PercentVolume,
-                    dfp.DoseLevel, dfp.Weight]
-            return '{} D{:.0f}%<={} cGy (w: {})'.format(*fmts)
-    except AttributeError:
-        return '{}'.format(optfn.ForRegionOfInterest.Name)
-
-
-class ObjectiveError(ValueError):
-    # Custom error to indicate that optimization failed due to a dose objective
-    # conflict.
-    pass
-
-
-class MinDVHFunctionsControl():
-    _isSelected = True
-    _dvhtext = ""
-    _dvh_fn = None
-
-    def __init__(self, dvhfunction=None):
-        logger.debug("{}".format(str(self.__class__)))
-        if dvhfunction:
-            try:
-                self.IsSelected = True
-                self.DVHText = dosefn_str(dvhfunction)
-                self._dvh_fn = dvhfunction
-            except AttributeError:
-                pass
-
-    def OnPropertyChanged(self, prop):
-        logger.debug("Changed {} in {}".format(str(prop), str(self)))
-
-    @property
-    def IsSelected(self):
-        return self._isSelected
-
-    @IsSelected.setter
-    def IsSelected(self, value):
-        self._isSelected = bool(value)
-        self.OnPropertyChanged("IsSelected")
-
-    @property
-    def DVHText(self):
-        return self._dvhtext
-
-    @DVHText.setter
-    def DVHText(self, value):
-        self._dvhtext = str(value)
-        self.OnPropertyChanged("DVHText")
-
-
-class BulkOptDialogWindow(RayWindow):
-    outdict = None
-    dvhfuncs = None
+    """
 
     def __init__(self, outdict, optimizer):
-        self.LoadComponent(__OPT_XAML)
+        self.LoadComponent(self.__OPT_XAML)
 
         self.outdict = outdict
 
@@ -321,22 +320,27 @@ class BulkOptimizer():
     def __init__(self, plan, beam_set, **kwargs):
 
         self.options = copy(self.__default_opts__)
-        for optfn in self.optimizer.Objective.ConstituentFunctions:
-            try:
-                if optfn.DoseFunctionParameters.FunctionType == 'MinDvh':
-                    self.options['dvhscaling'].append(optfn)
-            except AttributeError:
-                pass
-
-        for key in kwargs:
-            if key in self.options and kwargs[key] is not None:
-                self.options[key] = kwargs[key]
 
         self.optimizer = get_beamset_opt(plan, beam_set)
 
         if self.optimizer is None:
             raise SystemError("No optimization found for beamset {}".format(
                 beam_set.DicomPlanLabel))
+
+        for optfn in self.optimizer.Objective.ConstituentFunctions:
+            try:
+                if optfn.DoseFunctionParameters.FunctionType == 'MinDvh':
+                    self.options['dvhscaling'].append(optfn)
+            except AttributeError as e:
+                try:
+                    base_e = e.GetBaseException()
+                    logger.error(f"{base_e}", exc_info=True)
+                except AttributeError:
+                    pass
+
+        for key in kwargs:
+            if key in self.options and kwargs[key] is not None:
+                self.options[key] = kwargs[key]
 
         self.mindvhlimiters = get_mindvhlimiters(self.optimizer)
 
