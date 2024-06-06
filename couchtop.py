@@ -1062,7 +1062,7 @@ def determine_top(icase, plan, tops, isHN):
 
 def addcouchtoexam(icase, examination=None, plan=None,
                    patient_db=get_current("PatientDB"), remove_existing=True,
-                   geometry_only=True, **kwargs):
+                   geometry_only=True, skip_if_existing=False, **kwargs):
 
     if plan:
         examination = plan.GetTotalDoseStructureSet().OnExamination
@@ -1075,6 +1075,9 @@ def addcouchtoexam(icase, examination=None, plan=None,
     tops = CouchTopCollection(use_known=True)
 
     existing_tops = tops.get_tops_in_structure_set(structure_set)
+
+    if existing_tops and skip_if_existing:
+        return existing_tops[0]
 
     # Remove all existing tops.
     if existing_tops and remove_existing:
