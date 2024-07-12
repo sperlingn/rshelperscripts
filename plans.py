@@ -103,10 +103,10 @@ _TECHNIQUES_SET = {
 
 _BEAM_PHOTON_STATIC_PARAM_MAPPING = {
     'BeamQualityId': True,
-#    'CyberKnifeCollimationType': None,
-#    'CyberKnifeNodeSetName': None,
-#    'CyberKnifeRampVersion': None,
-#    'CyberKnifeAllowIncreasedPitchCorrection': None,
+    # 'CyberKnifeCollimationType': None,
+    # 'CyberKnifeNodeSetName': None,
+    # 'CyberKnifeRampVersion': None,
+    # 'CyberKnifeAllowIncreasedPitchCorrection': None,
     'IsocenterData': cll.get_iso_from_beam,
     'Name': True,
     'Description': True,
@@ -118,10 +118,10 @@ _BEAM_PHOTON_STATIC_PARAM_MAPPING = {
 }
 
 _BEAM_PHOTON_STATIC_DEFAULT = {
-    #'CyberKnifeCollimationType': None,
-    #'CyberKnifeNodeSetName': None,
-    #'CyberKnifeRampVersion': None,
-    #'CyberKnifeAllowIncreasedPitchCorrection': None
+    # 'CyberKnifeCollimationType': None,
+    # 'CyberKnifeNodeSetName': None,
+    # 'CyberKnifeRampVersion': None,
+    # 'CyberKnifeAllowIncreasedPitchCorrection': None
 }
 
 _BEAM_PHOTON_ARC_PARAM_MAPPING = {
@@ -509,8 +509,7 @@ def beam_opt_settings_from_plan(plan, beam):
                     return beamsetting
     return None
 
-
-def copy_beams(plan_in, beamset_in, plan_out, beamset_out,
+def copy_beams(plan_in, beamset_in, plan_out, beamset_out, # noqa: C901
                exclude_segments=True):
     _logger.debug(f"Copying beams from {beamset_in} to {beamset_out}.")
 
@@ -537,10 +536,19 @@ def copy_beams(plan_in, beamset_in, plan_out, beamset_out,
 
     _logger.debug(f"{energy_map=}")
 
+    try:
+        tgt = [s.Name for s in pm_out.RegionsOfInterest
+               if (rs_hasattr(s, 'OrganData.OrganType')
+                   and (rs_getattr(s, 'OrganData.OrganType') ==
+                        'Target'))][0]
+    except IndexError:
+        tgt = None
+        _logger.warning("No target ROIs, we will be unable to create "
+                        "segments for arc beams")
+
     # Use list(beamset_in.Beams) to freeze list of beams in case we are copying
     # into the same beamset.
     beam_in_list = list(beamset_in.Beams)
-    beam_out_list = []
     for beam_in in beam_in_list:
         params = params_from_beam(beam_in)
 
@@ -567,7 +575,6 @@ def copy_beams(plan_in, beamset_in, plan_out, beamset_out,
         create_beam(**params)
 
         beam_out = beamset_out.Beams[params['Name']]
-        beam_out_list.append(beam_out)
 
         # Need to set optmization settings for this beam in order to build
         # control points.
@@ -581,36 +588,52 @@ def copy_beams(plan_in, beamset_in, plan_out, beamset_out,
                                              _ARC_BEAM_OPT_PARAM_MAPPING)
 
             acp_out.EditArcBasedBeamOptimizationSettings(**arc_params)
-        else:
-            exclude_segments = True
 
-    # Need to generate Segments for all beams at once or it will fail.
-    if exclude_segments:
-        _logger.debug("Not asked to copy segments, done copying beams.")
-        return None
+        if not exclude_segments and len(beam_in.Segments) > 0:
+            MU_out = beam_in.BeamMU if beam_in.BeamMU > 0 else 999
+            # Copy segments for beam
+            if 'Arc' in beam_in.DeliveryTechnique:
+                # Arcs need to have the segments built
 
-    target_rois = [s.Name for s in pm_out.RegionsOfInterest
-                   if (rs_hasattr(s, 'OrganData.OrganType')
-                       and (rs_getattr(s, 'OrganData.OrganType') ==
-                            'Target'))]
-    if not target_rois:
-        _logger.warning("Asked to copy segments, but there are"
-                        " no target ROIs. Skipping.")
-        return None
+                beam_out.SetTreatOrProtectRoi(RoiName=tgt)
+                beamset_out.GenerateConformalArcSegments(Beams=[beam_out.Name])
+                # Ensure enough MU so segments are computable
+                copy_arc_segments(beam_in, beam_out)
+                beam_out.RemoveTreatOrProtectRoi(RoiName=tgt)
+            elif 'SMLC' in beam_in.DeliveryTechnique:
+                # SMLC will need a beam to be made for each segment then have
+                # those merged
+                merge_dest = beam_out.Name
+                mergers = []
+                beam_seg_out = beam_out
+                for i, seg in enumerate(beam_in.Segments):
+                    if i != 0:
+                        # Need to make beam for additional segments
+                        params['Name'] = get_unique_name(f'{merge_dest}[{i}]',
+                                                         beamset_out.Beams)
+                        mergers.append(params['Name'])
+                        create_beam(**params)
+                        beam_seg_out = beamset_out.Beams[params['Name']]
 
-    tgt = target_rois[0]
+                    beam_seg_out.ConformMlc()
+                    beam_seg_out.Segments[0].JawPositions = seg.JawPositions
+                    beam_seg_out.Segments[0].LeafPositions = seg.LeafPositions
 
-    beamset_out.SelectToUseROIasTreatOrProtectForAllBeams(RoiName=tgt)
-    beamset_out.GenerateConformalArcSegments(Beams=[beam_out.Name for beam_out
-                                                    in beam_out_list])
+                    # Set MU to 1, will be fixed on merged beam.
+                    beam_seg_out.BeamMU = MU_out * seg.RelativeWeight
 
-    for beam_in, beam_out in zip(beam_in_list, beam_out_list):
-        # Ensure enough MU so segments are computable
-        beam_out.BeamMU = beam_in.BeamMU if beam_in.BeamMU > 0 else 1000
-        copy_arc_segments(beam_in, beam_out)
+                if mergers:
+                    # Had more than one segment, need to merge.
+                    beamset_out.MergeBeamSegments(TargetBeamName=merge_dest,
+                                                  MergeBeamNames=mergers)
 
-    beamset_out.ClearROIFromTreatOrProtectUsageForAllBeams(RoiName=tgt)
-
+                beam_out.BeamMU = beam_in.BeamMU
+            else:
+                _logger.warning(
+                    f"Delivery Technique '{beam_in.DeliveryTechnique}' is not "
+                    f"supported for copying segments on beam '{beam_in.Name}'."
+                    "  Segments will not be copied.")
+            beam_out.BeamMU = MU_out
     return None
 
 
@@ -722,7 +745,7 @@ def copy_opt_parameters(optparam_in, optparam_out):
         if len(rob_in.PatientGeometryUncertaintyParameters.Examinations) > 0:
             # TODO: For robustness, we will need to call
             # optparam_out.SaveRobustnessParameters to set the examinations.
-            #raise NotImplementedError
+            # raise NotImplementedError
             pass
     except (TypeError, AttributeError):
         pass
