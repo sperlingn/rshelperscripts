@@ -8,6 +8,7 @@ from System import InvalidOperationException
 
 from .external import (RayWindow, CompositeAction, get_current, set_progress,
                        Show_YesNo, Show_OK)
+from .validations import fix_jaw
 
 from copy import copy
 
@@ -58,7 +59,7 @@ def dosefn_str(optfn):
         if dfp.FunctionType == 'MinDvh':
             fmts = [optfn.ForRegionOfInterest.Name, dfp.PercentVolume,
                     dfp.DoseLevel, dfp.Weight]
-            return '{} D{:.0f}%<={} cGy (w: {})'.format(*fmts)
+            return '{} D{:.0f}% ≥ {} cGy (w: {})'.format(*fmts)
     except AttributeError:
         return '{}'.format(optfn.ForRegionOfInterest.Name)
 
@@ -429,18 +430,19 @@ def update_machine_limits(current_opt):
                 # acppb.EditArcBasedBeamOptimizationSettings(**arc_opt_settings)
 
 
-def runbulkopt(options, mindvhlimiters, current_opt):
+def runbulkopt(options, mindvhlimiters, current_opt): # noqa: 901
     cycleiters = int(options['iterations'] / options['cycles'])
     actname = (f"Bulk Optimization "
                f"({cycleiters:d} iterations x {options['cycles']:d} runs)")
 
     # Only run on first beam_set in opt. TODO: work with multibeamset opts.
-    beam_set = current_opt.OptimizedBeamSets[0]
+    # beam_set = current_opt.OptimizedBeamSets[0]
     with CompositeAction(actname):
 
         update_machine_limits(current_opt)
 
-        beam_set.SetAutoScaleToPrimaryPrescription(AutoScale=False)
+        for beam_set in current_opt.OptimizedBeamSets:
+            beam_set.SetAutoScaleToPrimaryPrescription(AutoScale=False)
 
         scaledoses = [(optfn.ForRegionOfInterest.Name,
                        float(optfn.DoseFunctionParameters.DoseLevel),
@@ -457,6 +459,11 @@ def runbulkopt(options, mindvhlimiters, current_opt):
         for i in range(options['cycles']):
             set_progress(message=progmsg.format(i+1, options['cycles']),
                          percentage=(100.*(i+1)/(options['cycles'])))
+
+            if i+1 == options['cycles']:
+                # Last cycle, don't compute final dose.
+                op.DoseCalculation.ComputeFinalDose = False
+
             try:
                 current_opt.RunOptimization()
             except InvalidOperationException as e:
@@ -502,14 +509,27 @@ def runbulkopt(options, mindvhlimiters, current_opt):
                 else:
                     logger.info(f'Failed with InvalidOperationException: {e}')
                     raise e
-            scaleobjectives(beam_set, scaledoses, mindvhlimiters)
-            i += 1
+            finally:
+                op.DoseCalculation.ComputeFinalDose = True
+
+            for beam_set in current_opt.OptimizedBeamSets:
+                scaleobjectives(beam_set, scaledoses, mindvhlimiters)
 
         # Restore dose levels to pre-optmization value (prevent re-opt
         # creep)
         # TODO: might want to consider storing last opt numbers as well
         for roi, origDoseLevel, optfn in scaledoses:
             optfn.DoseFunctionParameters.DoseLevel = origDoseLevel
+
+        # Run jaw correction script to ensure valid plans.
+        for beam_set in current_opt.OptimizedBeamSets:
+            fix_jaw(beam_set)
+            try:
+                dosealg = beam_set.AccurateDoseAlgorithm.DoseAlgorithm
+                beam_set.ComputeDose(DoseAlgorithm=dosealg)
+            except InvalidOperationException:
+                # Didn't need to recompute.
+                pass
 
 
 def removefailedobjectives(options, roi_conflicts):
