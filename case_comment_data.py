@@ -68,9 +68,9 @@ def set_validation_comment(plan, beam_set, validation_type, status=True):
 
     _logger.debug(f"Set plan.Comments to {lines}")
 
-    action_name = ("Added " if status else "Removed "
-                   f"validation note for '{validation_type}' "
-                   f"in plan comment for plan [{obj_name(plan)}]")
+    action_name = "Added " if status else "Removed "
+    action_name += (f"validation note for '{validation_type}' "
+                    f"in plan comment for plan [{obj_name(plan)}]")
     with CompositeAction(action_name):
         plan.Comments = '\n'.join(lines)
 
