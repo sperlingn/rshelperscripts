@@ -597,7 +597,8 @@ def check_collision_dialog(plan, beam_set):
 
     status = {'status': results['Overlaps'].isFalse,
               'UpdateComment': (bool(results['UpdateComment'])
-                                if 'UpdateComment' in results else True)}
+                                if 'UpdateComment' in results else True),
+              'overlaps': results['Overlaps']}
 
     _logger.debug(f"Closed with result {res = }")
 

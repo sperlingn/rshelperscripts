@@ -253,7 +253,7 @@ def run_all_validations(plan, beam_set=None, silent=False, show_on_fail=True):
                         exc_info=True)
         Show_Warning(f"{warn}", "Can't Validate beamset.")
 
-    if silent and show_on_fail:
+    if silent and show_on_fail and fails:
         # Silent, but still show message box on failure.
         message = (f'Failed to validate plan "{obj_name(plan)}".\n'
                    'Encountered the following failures:\n\n')
