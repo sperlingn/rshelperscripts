@@ -587,7 +587,8 @@ def copy_beams(plan_in, beamset_in, plan_out, beamset_out, # noqa: C901
             arc_params = params_from_mapping(acp_in,
                                              _ARC_BEAM_OPT_PARAM_MAPPING)
 
-            acp_out.EditArcBasedBeamOptimizationSettings(**arc_params)
+            # TODO: Arc params saying "No changes to save" breaks this
+            #acp_out.EditArcBasedBeamOptimizationSettings(**arc_params)
 
         if not exclude_segments and len(beam_in.Segments) > 0:
             MU_out = beam_in.BeamMU if beam_in.BeamMU > 0 else 999
@@ -766,3 +767,46 @@ def copy_opt_tss(tss_in, tss_out):
     for bss_name in bss_dict_in & bss_dict_out:
         dup_object_param_values(bss_dict_in[bss_name], bss_dict_out[bss_name],
                                 sub_objs=['ArcConversionPropertiesPerBeam'])
+
+
+def calc_conformity_indices(beam_set):
+    if beam_set.FractionDose.DoseValues is None:
+        _logger.warning("No dose computed, unable to calculate indicies")
+        return None
+
+    nfx = beam_set.FractionationPattern.NumberOfFractions
+    ppdr = beam_set.Prescription.PrimaryPrescriptionDoseReference
+    rx = ppdr.DoseValue / nfx
+    rxname = ppdr.OnStructure.Name
+    external = beam_set.GetStructureSet().OutlineRoiGeometry.OfRoi.Name
+
+    fd = beam_set.FractionDose
+
+    rxivol, rx50ivol = fd.GetRelativeVolumeAtDoseValues(RoiName=external,
+                                                        DoseValues=[rx,
+                                                                    rx / 2])
+    pctTV_piv, = fd.GetRelativeVolumeAtDoseValues(RoiName=rxname,
+                                                  DoseValues=[rx])
+
+    d2, d98, d50 = fd.GetDoseAtRelativeVolumes(RoiName=rxname,
+                                               RelativeVolumes=[.02, .98, .5])
+
+    ev = fd.GetDoseGridRoi(RoiName=external).RoiVolumeDistribution.TotalVolume
+    tv = fd.GetDoseGridRoi(RoiName=rxname).OfRoiGeometry.GetRoiVolume()
+
+    tv_piv = pctTV_piv * tv
+
+    PCI = ((tv_piv)**2) / (rxivol * ev * tv)
+
+    GI = rx50ivol[1] / rxivol[0]
+
+    RTOGCI = (rxivol * ev) / tv
+
+    HI = (d2 - d98) / d50
+
+    return {'ROI': rxname,
+            'ROIvol': tv,
+            'PCI': PCI,
+            'GI': GI,
+            'RTOGCI': RTOGCI,
+            'HI': HI}
