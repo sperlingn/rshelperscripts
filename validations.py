@@ -7,6 +7,7 @@ from .collision_dialog import check_collision_dialog
 import logging
 import sys
 import inspect
+from collections import defaultdict
 
 _logger = logging.getLogger(__name__)
 
@@ -14,6 +15,29 @@ JAW_LIMIT = 0.5
 
 JAW_VALIDATION_STR = 'Jaw'
 COLLISION_VALIDATION_STR = 'Collision'
+
+
+class ValidationResult:
+    violation = False
+    message = ""
+    fixed = False
+
+    def __init__(self, violation, message=None):
+        self.violation = bool(violation)
+
+        if message is not None:
+            self.message = str(message)
+        else:
+            self.message = str(violation)
+
+    def __bool__(self):
+        return not self.violation
+
+    def __str__(self):
+        if self.fixed:
+            return f'{self.message} (Corrected)'
+        else:
+            return self.message
 
 
 class SegmentViolation:
@@ -75,7 +99,14 @@ class SegmentViolation:
         return any(self.violations.values())
 
 
-class ViolationDict(dict):
+class ViolationDict(defaultdict):
+    violations_by_type = None
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(dict, *args, **kwargs)
+
+        self.violations_by_type = defaultdict(lambda: defaultdict(list))
+
     def add_violation(self, beam, segment, violation_type):
         if beam not in self:
             self[beam] = {}
@@ -85,8 +116,17 @@ class ViolationDict(dict):
         else:
             self[beam][segment] = SegmentViolation(segment, violation_type)
 
+        self.violations_by_type[violation_type][beam].append(
+            str(segment.SegmentNumber+1))
+
     def __str__(self):
-        return '\n'.join(['Violation: Beam [{}]: CP [{}]'.format(
+        return '\n'.join(['{} Violation for Beam [{}]: CPs [{}]'.format(
+            violation_type,
+            obj_name(beam),
+            ','.join(segments))
+            for violation_type, beams in self.violations_by_type.items()
+            for beam, segments in beams.items()])
+        return '\n'.join(['Violations: Beam [{}]: CP [{}]'.format(
             obj_name(beam), ', '.join([f'{s}' for s in segments.values()]))
             for beam, segments in self.items()])
 
@@ -117,31 +157,21 @@ def check_jaw(beam_set):
 
 def fix_jaw(beam_set):
     with CompositeAction('Fix Jaw Gap'):
-        for beam in beam_set.Beams:
-            for seg in beam.Segments:
-                gap_x = JAW_LIMIT - (seg.JawPositions[1] - seg.JawPositions[0])
-                gap_y = JAW_LIMIT - (seg.JawPositions[3] - seg.JawPositions[2])
-                jp = [j for j in seg.JawPositions]
-                if gap_x > 0:
-                    jp[0] -= gap_x / 2
-                    jp[1] += gap_x / 2
-
-                if gap_y > 0:
-                    jp[2] -= gap_y / 2
-                    jp[3] += gap_y / 2
-
-                seg.JawPositions = jp
+        errorlist = check_jaw(beam_set)
+        errorlist.fix_violations()
+    return errorlist
 
 
 def validate_jaw(plan, beam_set, silent=False, fix_errors=False):
     beamset_validation_checkraise(beam_set)
     errorlist = check_jaw(beam_set)
+    validation = ValidationResult(errorlist)
     if not silent:
-        if not errorlist:
+        if validation:
             Show_OK("No collisions.", "Jaw collision status", ontop=True)
         else:
             outtext = ('Failed Jaw validation on the following CPs: '
-                       f'{errorlist}\n')
+                       f'{validation}\n')
 
             if fix_errors:
                 outtext += '\nFixing jaw gaps.'
@@ -153,14 +183,22 @@ def validate_jaw(plan, beam_set, silent=False, fix_errors=False):
                                       ontop=True, icon=MB_Icon.Error)
                 fix_errors = response == MB_Result.Yes
 
-    if not errorlist:
+    if validation:
         set_validation_comment(plan, beam_set, JAW_VALIDATION_STR)
     elif fix_errors:
         errorlist.fix_violations()
-        set_validation_comment(plan, beam_set, JAW_VALIDATION_STR)
+        validation.fixed = True
+
+        # Won't be able to set the comment without a save before hand, but
+        # likely shouldn't save without user review.  At least we should
+        # indicate that the violation has been repaired.
+
+        # set_validation_comment(plan, beam_set, JAW_VALIDATION_STR)
     else:
         _logger.debug("Didn't fix, so remove Jaw passing if it is here.")
         set_validation_comment(plan, beam_set, JAW_VALIDATION_STR, False)
+
+    return validation
 
 
 def validate_collision(plan, beam_set, silent=False):
@@ -174,19 +212,22 @@ def validate_collision(plan, beam_set, silent=False):
             can_update_comment = False
 
     if silent:
-        status = check_collision(plan, beam_set, silent=True,
-                                 retain=False, retain_on_fail=False)
+        coll_result = check_collision(plan, beam_set, silent=True,
+                                      retain=False, retain_on_fail=False)
     else:
-        status = check_collision_dialog(plan, beam_set)
+        coll_result = check_collision_dialog(plan, beam_set)
 
-    if status['UpdateComment'] and can_update_comment:
-        status = status['status']
+    if coll_result['UpdateComment'] and can_update_comment:
+        status = coll_result['status']
         _logger.info(f"Updating validation status for plan to {status}.")
         set_validation_comment(plan, beam_set,
                                COLLISION_VALIDATION_STR, status)
 
+    return ValidationResult(not coll_result['status'],
+                            message=coll_result['overlaps'])
 
-def run_all_validations(plan, beam_set=None, silent=False):
+
+def run_all_validations(plan, beam_set=None, silent=False, show_on_fail=True):
     # Runs all validations currently in the scope of the file.
     validations = {name: obj for name, obj
                    in inspect.getmembers(sys.modules[__name__])
@@ -198,12 +239,23 @@ def run_all_validations(plan, beam_set=None, silent=False):
     else:
         beam_sets = [bs for bs in plan.BeamSets]
 
+    fails = []
     try:
         for name, validation_fn in validations.items():
             _logger.info(f'Running {name}.')
             for beam_set_loop in beam_sets:
-                validation_fn(plan, beam_set_loop, silent)
+                status = validation_fn(plan, beam_set_loop, silent)
+                if not status:
+                    fails.append(status)
+
     except UserWarning as warn:
         _logger.warning(f"Failed to check {beam_set_loop} in {plan}",
                         exc_info=True)
         Show_Warning(f"{warn}", "Can't Validate beamset.")
+
+    if silent and show_on_fail:
+        # Silent, but still show message box on failure.
+        message = (f'Failed to validate plan "{obj_name(plan)}".\n'
+                   'Encountered the following failures:\n\n')
+        message += '\n'.join([f'{f!s}' for f in fails])
+        Show_Warning(caption="Failed Validation", message=message)
