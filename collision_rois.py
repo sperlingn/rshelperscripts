@@ -362,7 +362,8 @@ def check_collision(plan, beam_set, silent=False, retain=False,
         _logger.info(f"Stopped with warning. {e!s}", exc_info=True)
 
     status = {'status': overlaps.isFalse,
-              'UpdateComment': True}
+              'UpdateComment': True,
+              'overlaps': overlaps}
 
     return status
 
