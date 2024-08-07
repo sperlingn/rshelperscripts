@@ -588,7 +588,7 @@ def copy_beams(plan_in, beamset_in, plan_out, beamset_out, # noqa: C901
                                              _ARC_BEAM_OPT_PARAM_MAPPING)
 
             # TODO: Arc params saying "No changes to save" breaks this
-            #acp_out.EditArcBasedBeamOptimizationSettings(**arc_params)
+            # acp_out.EditArcBasedBeamOptimizationSettings(**arc_params)
 
         if not exclude_segments and len(beam_in.Segments) > 0:
             MU_out = beam_in.BeamMU if beam_in.BeamMU > 0 else 999
@@ -769,30 +769,22 @@ def copy_opt_tss(tss_in, tss_out):
                                 sub_objs=['ArcConversionPropertiesPerBeam'])
 
 
-def calc_conformity_indices(beam_set):
-    if beam_set.FractionDose.DoseValues is None:
+def calc_conformity_indices(fd, external, tgt, rx):
+    if fd.DoseValues is None:
         _logger.warning("No dose computed, unable to calculate indicies")
         return None
-
-    nfx = beam_set.FractionationPattern.NumberOfFractions
-    ppdr = beam_set.Prescription.PrimaryPrescriptionDoseReference
-    rx = ppdr.DoseValue / nfx
-    rxname = ppdr.OnStructure.Name
-    external = beam_set.GetStructureSet().OutlineRoiGeometry.OfRoi.Name
-
-    fd = beam_set.FractionDose
 
     rxivol, rx50ivol = fd.GetRelativeVolumeAtDoseValues(RoiName=external,
                                                         DoseValues=[rx,
                                                                     rx / 2])
-    pctTV_piv, = fd.GetRelativeVolumeAtDoseValues(RoiName=rxname,
+    pctTV_piv, = fd.GetRelativeVolumeAtDoseValues(RoiName=tgt,
                                                   DoseValues=[rx])
 
-    d2, d98, d50 = fd.GetDoseAtRelativeVolumes(RoiName=rxname,
+    d2, d98, d50 = fd.GetDoseAtRelativeVolumes(RoiName=tgt,
                                                RelativeVolumes=[.02, .98, .5])
 
     ev = fd.GetDoseGridRoi(RoiName=external).RoiVolumeDistribution.TotalVolume
-    tv = fd.GetDoseGridRoi(RoiName=rxname).OfRoiGeometry.GetRoiVolume()
+    tv = fd.GetDoseGridRoi(RoiName=tgt).OfRoiGeometry.GetRoiVolume()
 
     tv_piv = pctTV_piv * tv
 
@@ -804,9 +796,34 @@ def calc_conformity_indices(beam_set):
 
     HI = (d2 - d98) / d50
 
-    return {'ROI': rxname,
+    return {'ROI': tgt,
             'ROIvol': tv,
             'PCI': PCI,
             'GI': GI,
             'RTOGCI': RTOGCI,
             'HI': HI}
+
+
+def beamset_rxinfo(beamset):
+    ppdr = beamset.Prescription.PrimaryPrescriptionDoseReference
+    rxinfo = {'Dose': ppdr.DoseValue,
+              'nFx': beamset.FractionationPattern.NumberOfFractions,
+              'ROI': ppdr.OnStructure.Name}
+    rxinfo['Dose/fx'] = rxinfo['Dose'] / rxinfo['nFx']
+
+    return rxinfo
+
+
+def beamset_conformity_indices(beamset, roi, dose):
+    if beamset.FractionDose.DoseValues is None:
+        _logger.warning("No dose computed, unable to calculate indicies")
+        return None
+
+    rxinfo = beamset_rxinfo(beamset)
+
+    fd = beamset.FractionDose
+    rx = rxinfo['Dose/fx']
+    tgt = rxinfo['ROI']
+    external = beamset.GetStructureSet().OutlineRoiGeometry.OfRoi.Name
+
+    return calc_conformity_indices(fd, external, tgt, rx)
