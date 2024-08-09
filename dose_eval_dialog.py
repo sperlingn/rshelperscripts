@@ -1,12 +1,15 @@
 import logging
-
-from math import inf
 from System.Windows.Media import Brushes
 from System.Windows.Controls import (Border, TextBlock, RowDefinition,
-                                     ColumnDefinition, ComboBoxItem)
+                                     ColumnDefinition, ComboBox, ComboBoxItem,
+                                     Separator)
 from System.Windows.Documents import Bold, Run, LineBreak
 
-from .external import RayWindow
+from .external import (get_current, obj_name, MockPrescriptionDoseReference,
+                       RayWindow)
+from .plans import beamset_conformity_indices
+
+from math import inf
 
 _logger = logging.getLogger(__name__)
 
@@ -132,33 +135,78 @@ class SizeBorderedHeader(BorderedTextBoxBlack):
         textblock.Inlines.Add(textline)
 
 
+class IndexData(dict):
+    # Class to hold dose index data for a particular site
+
+    volumes: type[set]
+    index_names: type[set]
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+
+        self.volumes = {k: self[k]['Vol'] for
+                        k in sorted(self, key=lambda a: self[a]['Vol'][0])}
+
+        self.index_names = {index for indices in self.values()
+                            for index in indices if index != 'Vol'}
+
+
 class Indices(dict):
     # Class to hold indices by site.
 
-    volumes = None  # dict
-    index_names = None  # dict
-
     def __init__(self):
-        super().__init__(INDICES_DICT)
-
-        self.volumes = {}
-        self.index_names = {}
-
-        for site, item in self.items():
-            self.volumes[site] = {k: item[k]['Vol'] for
-                                  k in sorted(item,
-                                              key=lambda a: item[a]['Vol'][0])}
-
-            self.index_names[site] = {index for indices in item.values()
-                                      for index in indices if index != 'Vol'}
+        super().__init__({k: IndexData(v) for k, v in INDICES_DICT.items()})
 
 
 DoseIndices = Indices()
 
 
+class ContentWrapper:
+    data = None
+
+    def __init__(self, data):
+        self.data = data
+
+    def ToString(self):
+        return f'{self.data}'
+
+    def __str__(self):
+        return self.ToString()
+
+
+class PlanContentWrapper(ContentWrapper):
+    def ToString(self):
+        return (f"{obj_name(self.data['Plan'])} --"
+                f" {obj_name(self.data['BeamSet'])}")
+
+
+class TargetRoiContentWrapper(ContentWrapper):
+    def ToString(self):
+        name = f"{obj_name(self.data.OnStructure)}"
+        dose = f"{self.data.DoseValue:.0f}"
+        volume = f"{self.data}"
+        return (f"{name} ({dose} cGy, {volume} cc)")
+
+
+class PlanComboBoxItem(ComboBoxItem):
+    def __init__(self, plandata):
+        super().__init__()
+
+        self.Content = PlanContentWrapper(plandata)
+        self.IsSelected = plandata['Selected']
+
+
+class TargetRoiComboBoxItem(ComboBoxItem):
+    def __init__(self, roirxdata):
+        super().__init__()
+        self.Content = TargetRoiContentWrapper(roirxdata)
+
+
 class MyWindow(RayWindow):
     active_site = "Brain"
     roi_data = None
+    PlanSelectComboBox: type[ComboBox]
+    ROIComboBox: type[ComboBox]
 
     _XAML = """
 <Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
@@ -177,8 +225,7 @@ class MyWindow(RayWindow):
             <Setter Property="Margin" Value="0"/>
             <Style.Triggers>
                 <DataTrigger Binding="{Binding Visibility,
-                                       ElementName=PlanSelectPanel}"
-                             Value="Collapsed">
+                    ElementName=PlanSelectPanel}" Value="Collapsed">
                     <Setter Property="Visibility" Value="Visible"/>
                 </DataTrigger>
             </Style.Triggers>
@@ -212,22 +259,25 @@ class MyWindow(RayWindow):
                     <ControlTemplate TargetType="{x:Type Expander}">
                         <DockPanel>
                             <ContentPresenter x:Name="ExpandSite"
-                                DockPanel.Dock="Top"
-                                Focusable="false"
-                                Margin="{TemplateBinding Padding}"
-                                Visibility="Collapsed"/>
+                                              DockPanel.Dock="Top"
+                                              Focusable="false"
+                                              Visibility="Collapsed"/>
                             <ToggleButton x:Name="HeaderSite"
                                 DockPanel.Dock="Bottom"
-                                IsChecked="{Binding IsExpanded, Mode=TwoWay,
-                                            RelativeSource={RelativeSource
-                                                            TemplatedParent}}"
+                                IsChecked="{Binding IsExpanded,
+                                    Mode=TwoWay,
+                                    RelativeSource={RelativeSource
+                                        TemplatedParent}}"
                                 Style="{StaticResource ExpanderButton}"/>
                         </DockPanel>
                         <ControlTemplate.Triggers>
                             <Trigger Property="IsExpanded" Value="true">
                                 <Setter Property="Visibility"
-                                        TargetName="ExpandSite"
-                                        Value="Visible"/>
+                                 TargetName="ExpandSite" Value="Visible"/>
+                            </Trigger>
+                            <Trigger Property="IsEnabled" Value="false">
+                                <Setter Property="Foreground"
+        Value="{DynamicResource {x:Static SystemColors.GrayTextBrushKey}}"/>
                             </Trigger>
                         </ControlTemplate.Triggers>
                     </ControlTemplate>
@@ -239,14 +289,18 @@ class MyWindow(RayWindow):
 
     <StackPanel Background="#FFE6E6E6" MinHeight="20" Margin="0">
         <Expander Style="{StaticResource ExpanderPanel}">
-            <DockPanel x:Name="PlanSelectPanel">
+            <DockPanel>
                 <Label Content="Plan to evaluate: "/>
-                <ComboBox />
+                <ComboBox x:Name="PlanSelectComboBox">
+                    <ComboBoxItem/>
+                    <Separator/>
+                    <ComboBoxItem/>
+                </ComboBox>
             </DockPanel>
         </Expander>
 
         <DockPanel LastChildFill="False">
-            <ComboBox x:Name="ROINameAndVol" DockPanel.Dock="Left">
+            <ComboBox x:Name="ROIComboBox" DockPanel.Dock="Left">
                 <ComboBoxItem Content="PTV50" IsSelected="True"/>
             </ComboBox>
             <StackPanel Orientation="Horizontal" DockPanel.Dock="Right">
@@ -308,8 +362,6 @@ class MyWindow(RayWindow):
                        Content="Medium&#10;(10cc&lt;V&lt;30cc)" />
                 <Label Grid.Column="5" Grid.Row="0"
                        Content="Large&#10;(V&gt;30cc)" />
-
-
                 <Label Grid.Column="0" Grid.Row="1" Content="CI"/>
                 <Label Grid.Column="1" Grid.Row="1" Content="Value"/>
                 <Border Grid.Column="3" Grid.Row="1">
@@ -320,13 +372,11 @@ class MyWindow(RayWindow):
                 </Border>
                 <Label Content="1" Grid.Column="2" Grid.Row="1"/>
 
-                <Rectangle x:Name="ActiveVolume" Grid.RowSpan="4"
-                           Grid.ColumnSpan="1" Grid.Column="2"
-                           Panel.ZIndex="-1">
+                <Rectangle x:Name="ActiveVolume" Grid.RowSpan="2147483647"
+                        Grid.ColumnSpan="1" Grid.Column="2" Panel.ZIndex="-1">
                     <Rectangle.Fill>
                         <SolidColorBrush
-                         Color="{DynamicResource {x:Static
-                         SystemColors.ActiveCaptionColorKey}}"/>
+    Color="{DynamicResource {x:Static SystemColors.ActiveCaptionColorKey}}"/>
                     </Rectangle.Fill>
                 </Rectangle>
 
@@ -338,14 +388,18 @@ class MyWindow(RayWindow):
 </Window>
     """
 
-    def __init__(self, casedata=None, plan=None, beamset=None):
+    def __init__(self, beamset=None, plan=None, casedata=None):
 
         self.LoadComponent(self._XAML)
 
-        # self.ROINameAndVol.Content = f'{roi_data["ROI"]} ({roi_data["ROIvol"]:0.1f} cc)'
-        # self.Site.Content = f'{site}'
+        casedata = get_current("Case") if casedata is None else casedata
+        plan = get_current("Plan") if plan is None else plan
+        beamset = get_current("BeamSet") if beamset is None else beamset
 
-        self.roi_data = casedata
+        self.roi_data = {'ROIvol': 0}
+
+        self.ROIComboBox.SelectionChanged += self.ROIChanged
+        self.build_plan_list(beamset, plan, casedata)
 
         # Build the list of sites and add the OnChanged Event Callback
         sites = DoseIndices.keys()
@@ -354,11 +408,103 @@ class MyWindow(RayWindow):
 
         self.build_labels()
 
+    def build_roi_list(self, beamset, include_all_targets=True,
+                       include_all_rois=False):
+        self.ROIComboBox.Items.Clear()
+
+        ptmodel = beamset.PatientSetup.CollisionProperties.ForPatientModel
+        rois = set(ptmodel.RegionsOfInterest)
+        target_rois = {roi for roi in rois
+                       if roi.OrganData.OrganType == 'Target'}
+
+        pdrlist = [beamset.Prescription.PrimaryPrescriptionDoseReference]
+        primary_rxdose = pdrlist[0].DoseValue
+
+        if len(beamset.Prescription.PrescriptionDoseReferences) > 1:
+            pdrlist.append(None)
+            pdrlist += [pdr for pdr in
+                        beamset.Prescription.PrescriptionDoseReferences
+                        if pdr.PrescriptionType == 'DoseAtVolume'
+                        and pdr.OnStructure is not None]
+
+        targets_without_rx = target_rois - {pdr.OnStructure for pdr
+                                            in pdrlist if pdr is not None}
+        if targets_without_rx and include_all_targets:
+            pdrlist.append(None)
+            for roi in targets_without_rx:
+                pdrlist.append(MockPrescriptionDoseReference(roi,
+                                                             primary_rxdose))
+
+        other_rois = rois - {pdr.OnStructure for pdr
+                             in pdrlist if pdr is not None}
+        if other_rois and include_all_rois:
+            pdrlist.append(None)
+            for roi in other_rois:
+                pdrlist.append(MockPrescriptionDoseReference(roi,
+                                                             primary_rxdose))
+
+        for pdr in pdrlist:
+            if pdr is None:
+                self.ROIComboBox.Items.Add(Separator())
+            else:
+                self.ROIComboBox.Items.Add(TargetRoiComboBoxItem(pdr))
+
+        self.ROIComboBox.Items[0].IsSelected = True
+
+    def build_plan_list(self, beamset, selected_plan=None, casedata=None):
+        # Build the list of plans to select from.
+        if casedata and selected_plan in casedata.TreatmentPlans:
+            plans = [{'BeamSet': bs,
+                      'Plan': plan,
+                      'Selected': bs == beamset}
+                     for plan in casedata.TreatmentPlans
+                     for bs in plan.BeamSets]
+        elif selected_plan:
+            plans = [{'BeamSet': beamset,
+                      'Plan': selected_plan,
+                      'Selected': bs == beamset}
+                     for bs in selected_plan.BeamSets]
+        else:
+            plans = [{'BeamSet': beamset,
+                      'Plan': 'Current Plan',
+                      'Selected': True}]
+
+        self.PlanSelectComboBox.Items.Clear()
+
+        lastplan = plans[0]['Plan']
+        for plandata in plans:
+            if lastplan != plandata['Plan']:
+                self.PlanSelectComboBox.Items.Add(Separator())
+            planitem = PlanComboBoxItem(plandata)
+            _logger.debug(f'Added {planitem=} to combobox. '
+                          f'{planitem.Content.data=}')
+            self.PlanSelectComboBox.Items.Add(planitem)
+
+        # Finally, rebuild the ROI list
+        self.build_roi_list(beamset)
+
     def SiteChanged(self, sender, event):
         _logger.debug(f'Site change {sender.SelectedItem.Content=}'
                       f' {self.active_site=}')
         if sender.SelectedItem.Content != self.active_site:
             self.active_site = sender.SelectedItem.Content
+            self.build_labels()
+
+    def ROIChanged(self, sender, event):
+        if sender.SelectedItem is None:
+            return
+
+        plandata = self.PlanSelectComboBox.SelectedItem.Content.data
+
+        _logger.debug(f'ROI change {sender.SelectedItem.Content=}'
+                      f' {self.roi_data=}')
+        if sender.SelectedItem.Content != sender.Text:
+            _logger.debug(f'Roi changed from {sender.Text}'
+                          f' to {sender.SelectedItem.Content}')
+            beamset = plandata['BeamSet']
+            rxdata = sender.SelectedItem.Content.data
+            self.roi_data = beamset_conformity_indices(beamset, rxdata)
+
             self.build_labels()
 
     def build_site_dropdown(self, sites):
@@ -375,9 +521,11 @@ class MyWindow(RayWindow):
         site = self.active_site
         roi_data = self.roi_data
 
-        vol_range = DoseIndices.volumes[site]
+        site_idx = DoseIndices[site]
 
-        indices = DoseIndices.indexs[site] & roi_data.keys()
+        vol_range = site_idx.volumes
+
+        indices = site_idx.index_names & roi_data.keys()
 
         self.DosesGrid.Children.Clear()
 
@@ -388,17 +536,17 @@ class MyWindow(RayWindow):
         self.DosesGrid.ColumnDefinitions.Add(ColumnDefinition())
         self.DosesGrid.ColumnDefinitions.Add(ColumnDefinition())
 
-        for row, index in enumerate(indices):
+        for row, index_name in enumerate(indices):
 
             self.DosesGrid.RowDefinitions.Add(RowDefinition())
 
-            idx_header_label = IndexHeader(index)
-
+            idx_header_label = IndexHeader(index_name)
             self.DosesGrid.SetRow(idx_header_label, row + 1)
+
             self.DosesGrid.SetColumn(idx_header_label, 0)
             self.DosesGrid.Children.Add(idx_header_label)
 
-            goal_value = BorderedTextBoxBlack(f'{roi_data[index]:0.2f}')
+            goal_value = BorderedTextBoxBlack(f'{roi_data[index_name]:0.2f}')
 
             self.DosesGrid.SetRow(goal_value, row + 1)
             self.DosesGrid.SetColumn(goal_value, 1)
@@ -418,8 +566,8 @@ class MyWindow(RayWindow):
             self.DosesGrid.SetColumn(header_label, col + 2)
             self.DosesGrid.Children.Add(header_label)
 
-            for row, index in enumerate(indices):
-                range_label = GoalBorderedText(DoseIndices[site][size][index])
+            for row, index_name in enumerate(indices):
+                range_label = GoalBorderedText(site_idx[size][index_name])
 
                 self.DosesGrid.SetRow(range_label, row + 1)
                 self.DosesGrid.SetColumn(range_label, col + 2)

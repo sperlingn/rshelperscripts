@@ -814,7 +814,7 @@ def beamset_rxinfo(beamset):
     return rxinfo
 
 
-def beamset_conformity_indices(beamset, roi, dose):
+def beamset_conformity_indices(beamset, roi=None, dose=None):
     if beamset.FractionDose.DoseValues is None:
         _logger.warning("No dose computed, unable to calculate indicies")
         return None
@@ -822,8 +822,8 @@ def beamset_conformity_indices(beamset, roi, dose):
     rxinfo = beamset_rxinfo(beamset)
 
     fd = beamset.FractionDose
-    rx = rxinfo['Dose/fx']
-    tgt = rxinfo['ROI']
+    rx = rxinfo['Dose/fx'] if dose is None else dose
+    tgt = rxinfo['ROI'] if roi is None else roi
     external = beamset.GetStructureSet().OutlineRoiGeometry.OfRoi.Name
 
     return calc_conformity_indices(fd, external, tgt, rx)
