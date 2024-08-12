@@ -174,6 +174,29 @@ def _await_user_input_mb(message):
     return Show_OK(f'{message}', "Awaiting Input", ontop=True)
 
 
+class MockObject(object):
+    def __getattr__(self, attr):
+        setattr(self, attr, MockObject())
+        return getattr(self, attr)
+
+
+class MockStructure(MockObject):
+    #  Name: type[str]  # Wait for Py 3.10 for typing
+
+    def __init__(self, name='ROI_1', roitype='Unknown'):
+        self.Name = name
+        self.OrganData.OrganType = roitype
+
+
+class MockPrescriptionDoseReference(MockObject):
+    # DoseValue: type[float]  # Wait for Py 3.10 for typing
+    # OnStructure: type[MockStructure]  # Wait for Py 3.10 for typing
+
+    def __init__(self, roi=None, dosevalue=1000):
+        self.OnStructure = MockStructure() if roi is None else roi
+        self.DoseValue = dosevalue
+
+
 try:
     from connect import RayWindow
 except ImportError:
@@ -396,7 +419,7 @@ def rs_hasattr(obj, attrname):
         return False
 
 
-def rs_getattr(obj, attrname):
+def rs_getattr(obj, attrname, *args, **kwargs):
     if attrname in ['', '.', 'self']:
         # If we are passed an empty attrname, a bare dot, or self, return obj
         return obj
@@ -404,8 +427,8 @@ def rs_getattr(obj, attrname):
     if rs_hasattr(obj, attrname) and '.' in attrname:
         # Composite attribute, nest.
         firstattr, rest = attrname.split('.', 1)
-        return rs_getattr(getattr(obj, firstattr), rest)
-    return getattr(obj, attrname)
+        return rs_getattr(getattr(obj, firstattr), rest, **kwargs)
+    return getattr(obj, attrname, *args, **kwargs)
 
 
 def rs_callable(obj, attrname):
@@ -749,7 +772,8 @@ class BeamReorderDialog(RayWindow):
                           f"Y2: {beam.Segments[0].JawPositions[3]:0.1f}")
 
                 lbi.ToolTip = tt
-            except (ValueError, TypeError, AttributeError, ArgumentOutOfRangeException):
+            except (ValueError, TypeError, AttributeError,
+                    ArgumentOutOfRangeException):
                 pass
 
             lbi.PreviewMouseLeftButtonDown += self.BeamOrder_PrevMLBDown

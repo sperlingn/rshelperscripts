@@ -2,7 +2,7 @@ import logging
 from .clinicalgoals import copy_clinical_goals
 from .external import (CompositeAction as _CompositeAction, ObjectDict,
                        params_from_mapping, get_machine,
-                       rs_getattr, rs_hasattr,
+                       rs_getattr, rs_hasattr, obj_name,
                        dup_object_param_values, CallLaterList, get_unique_name)
 from .examinations import duplicate_exam as _duplicate_exam
 # from .points import point as _point
@@ -777,12 +777,16 @@ def calc_conformity_indices(fd, external, tgt, rx):
     rxivol, rx50ivol = fd.GetRelativeVolumeAtDoseValues(RoiName=external,
                                                         DoseValues=[rx,
                                                                     rx / 2])
+
+    _logger.debug(f"{rxivol=} {rx50ivol=}")
     pctTV_piv, = fd.GetRelativeVolumeAtDoseValues(RoiName=tgt,
                                                   DoseValues=[rx])
 
+    _logger.debug(f"{pctTV_piv=}")
     d2, d98, d50 = fd.GetDoseAtRelativeVolumes(RoiName=tgt,
                                                RelativeVolumes=[.02, .98, .5])
 
+    _logger.debug(f"{[d2, d98, d50]=}")
     ev = fd.GetDoseGridRoi(RoiName=external).RoiVolumeDistribution.TotalVolume
     tv = fd.GetDoseGridRoi(RoiName=tgt).OfRoiGeometry.GetRoiVolume()
 
@@ -790,7 +794,7 @@ def calc_conformity_indices(fd, external, tgt, rx):
 
     PCI = ((tv_piv)**2) / (rxivol * ev * tv)
 
-    GI = rx50ivol[1] / rxivol[0]
+    GI = rx50ivol / rxivol
 
     RTOGCI = (rxivol * ev) / tv
 
@@ -808,7 +812,7 @@ def beamset_rxinfo(beamset):
     ppdr = beamset.Prescription.PrimaryPrescriptionDoseReference
     rxinfo = {'Dose': ppdr.DoseValue,
               'nFx': beamset.FractionationPattern.NumberOfFractions,
-              'ROI': ppdr.OnStructure.Name}
+              'ROI': obj_name(rs_getattr(ppdr, "OnStrucure", ""))}
     rxinfo['Dose/fx'] = rxinfo['Dose'] / rxinfo['nFx']
 
     return rxinfo
@@ -822,8 +826,8 @@ def beamset_conformity_indices(beamset, roi=None, dose=None):
     rxinfo = beamset_rxinfo(beamset)
 
     fd = beamset.FractionDose
-    rx = rxinfo['Dose/fx'] if dose is None else dose
-    tgt = rxinfo['ROI'] if roi is None else roi
-    external = beamset.GetStructureSet().OutlineRoiGeometry.OfRoi.Name
+    rx = dose / rxinfo['nFx'] if dose else rxinfo['Dose/fx']
+    tgt = obj_name(roi) if roi else rxinfo['ROI']
+    external = obj_name(beamset.GetStructureSet().OutlineRoiGeometry.OfRoi)
 
     return calc_conformity_indices(fd, external, tgt, rx)

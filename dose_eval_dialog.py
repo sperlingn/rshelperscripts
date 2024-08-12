@@ -1,12 +1,11 @@
 import logging
 from System.Windows.Media import Brushes
 from System.Windows.Controls import (Border, TextBlock, RowDefinition,
-                                     ColumnDefinition, ComboBox, ComboBoxItem,
-                                     Separator)
+                                     ColumnDefinition, ComboBoxItem, Separator)
 from System.Windows.Documents import Bold, Run, LineBreak
 
-from .external import (get_current, obj_name, MockPrescriptionDoseReference,
-                       RayWindow)
+from .external import (get_current, obj_name, MockObject,
+                       MockPrescriptionDoseReference, RayWindow)
 from .plans import beamset_conformity_indices
 
 from math import inf
@@ -138,8 +137,8 @@ class SizeBorderedHeader(BorderedTextBoxBlack):
 class IndexData(dict):
     # Class to hold dose index data for a particular site
 
-    volumes: type[set]
-    index_names: type[set]
+    # volumes: type[set]  # Wait for Py 3.10 for typing
+    # index_names: type[set]  # Wait for Py 3.10 for typing
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -163,50 +162,50 @@ DoseIndices = Indices()
 
 class ContentWrapper:
     data = None
+    content = None
 
-    def __init__(self, data):
-        self.data = data
-
-    def ToString(self):
-        return f'{self.data}'
+    def __init__(self, content):
+        self.content = content
+        # self.data = data
+        _logger.debug(f"Built {self=}")
 
     def __str__(self):
-        return self.ToString()
+        _logger.debug(f"Getting str for content wrapper {self=}")
+        return f'{self.content}'
 
-
-class PlanContentWrapper(ContentWrapper):
-    def ToString(self):
-        return (f"{obj_name(self.data['Plan'])} --"
-                f" {obj_name(self.data['BeamSet'])}")
-
-
-class TargetRoiContentWrapper(ContentWrapper):
-    def ToString(self):
-        name = f"{obj_name(self.data.OnStructure)}"
-        dose = f"{self.data.DoseValue:.0f}"
-        volume = f"{self.data}"
-        return (f"{name} ({dose} cGy, {volume} cc)")
+    ToString = __str__
 
 
 class PlanComboBoxItem(ComboBoxItem):
     def __init__(self, plandata):
         super().__init__()
 
-        self.Content = PlanContentWrapper(plandata)
-        self.IsSelected = plandata['Selected']
+        planname = f"{obj_name(plandata['Plan'])}"
+        bsname = f"{obj_name(plandata['BeamSet'])}"
+
+        content = f"{planname} -- {bsname}"
+
+        _logger.debug(f"Built {self=}")
+
+        self.Content = ContentWrapper(content)
 
 
 class TargetRoiComboBoxItem(ComboBoxItem):
     def __init__(self, roirxdata):
         super().__init__()
-        self.Content = TargetRoiContentWrapper(roirxdata)
+        name = f"{obj_name(roirxdata.OnStructure)}"
+        dose = f"{roirxdata.DoseValue:.0f}"
+
+        content = f"{name} ({dose} cGy)"
+        _logger.debug(f"Built {self=}")
+        self.Content = ContentWrapper(content)
 
 
-class MyWindow(RayWindow):
+class ConformityIndicesWindow(RayWindow):
     active_site = "Brain"
     roi_data = None
-    PlanSelectComboBox: type[ComboBox]
-    ROIComboBox: type[ComboBox]
+    # PlanSelectComboBox: type[ComboBox]  # Wait for Py 3.10 for typing
+    # ROIComboBox: type[ComboBox]  # Wait for Py 3.10 for typing
 
     _XAML = """
 <Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
@@ -291,7 +290,8 @@ class MyWindow(RayWindow):
         <Expander Style="{StaticResource ExpanderPanel}">
             <DockPanel>
                 <Label Content="Plan to evaluate: "/>
-                <ComboBox x:Name="PlanSelectComboBox">
+                <ComboBox x:Name="PlanSelectComboBox"
+                          SelectionChanged="PlanChanged">
                     <ComboBoxItem/>
                     <Separator/>
                     <ComboBoxItem/>
@@ -300,12 +300,20 @@ class MyWindow(RayWindow):
         </Expander>
 
         <DockPanel LastChildFill="False">
-            <ComboBox x:Name="ROIComboBox" DockPanel.Dock="Left">
+            <ComboBox x:Name="ROIComboBox" DockPanel.Dock="Left"
+                      SelectionChanged="ROIChanged">
                 <ComboBoxItem Content="PTV50" IsSelected="True"/>
             </ComboBox>
+            <Label >
+                <TextBlock>
+                    <Run>Volume</Run>
+                    <Run x:Name="ROIVolume">50</Run>
+                    <Run>cc</Run>
+                </TextBlock>
+            </Label>
             <StackPanel Orientation="Horizontal" DockPanel.Dock="Right">
                 <Label Content="Site:"/>
-                <ComboBox x:Name="Site">
+                <ComboBox x:Name="Site" SelectionChanged="SiteChanged">
                     <ComboBoxItem Content="Unknown" IsSelected="True"/>
                 </ComboBox>
             </StackPanel>
@@ -380,6 +388,14 @@ class MyWindow(RayWindow):
                     </Rectangle.Fill>
                 </Rectangle>
 
+                <TextBlock x:Name="ErrorBlock"
+                           Grid.Column="2" Grid.ColumnSpan="4" Grid.Row="1"
+                           FontSize="30" FontWeight="Bold" Foreground="Red">
+                    <Run>Dose not calculated, or an error has occured.</Run>
+                    <LineBreak/>
+                    <Run>Check execution log.</Run>
+                </TextBlock>
+
             </Grid>
         </Border>
         <Button Name="btnCancel" IsCancel="true"
@@ -398,27 +414,40 @@ class MyWindow(RayWindow):
 
         self.roi_data = {'ROIvol': 0}
 
-        self.ROIComboBox.SelectionChanged += self.ROIChanged
+        # self.ROIComboBox.SelectionChanged += self.ROIChanged
         self.build_plan_list(beamset, plan, casedata)
 
         # Build the list of sites and add the OnChanged Event Callback
         sites = DoseIndices.keys()
         self.build_site_dropdown(sites)
-        self.Site.SelectionChanged += self.SiteChanged
+        # self.Site.SelectionChanged += self.SiteChanged
 
         self.build_labels()
 
     def build_roi_list(self, beamset, include_all_targets=True,
                        include_all_rois=False):
+
+        _logger.debug("Building roi list")
+
         self.ROIComboBox.Items.Clear()
 
         ptmodel = beamset.PatientSetup.CollisionProperties.ForPatientModel
         rois = set(ptmodel.RegionsOfInterest)
+
         target_rois = {roi for roi in rois
                        if roi.OrganData.OrganType == 'Target'}
 
-        pdrlist = [beamset.Prescription.PrimaryPrescriptionDoseReference]
-        primary_rxdose = pdrlist[0].DoseValue
+        _logger.debug(f"{target_rois=}")
+
+        ppdr = beamset.Prescription.PrimaryPrescriptionDoseReference
+        primary_rxdose = ppdr.DoseValue
+        pdrlist = []
+
+        if ppdr.PrescriptionType == 'DoseAtVolume':
+            pdrlist = [ppdr]
+
+        _logger.debug(f"Initial {pdrlist=}")
+        _logger.debug(f"{primary_rxdose=}")
 
         if len(beamset.Prescription.PrescriptionDoseReferences) > 1:
             pdrlist.append(None)
@@ -443,67 +472,125 @@ class MyWindow(RayWindow):
                 pdrlist.append(MockPrescriptionDoseReference(roi,
                                                              primary_rxdose))
 
+        if pdrlist[0] is None:
+            pdrlist.pop(0)
+
+        _logger.debug(f"{pdrlist=}")
+
+        self.pdrlist = pdrlist
+
         for pdr in pdrlist:
             if pdr is None:
                 self.ROIComboBox.Items.Add(Separator())
             else:
-                self.ROIComboBox.Items.Add(TargetRoiComboBoxItem(pdr))
+                name = f"{obj_name(pdr.OnStructure)}"
+                dose = f"{pdr.DoseValue:.0f}"
+                roicbitem = ComboBoxItem()
+                roicbitem.Content = f"{name} ({dose} cGy)"
+
+                self.ROIComboBox.Items.Add(roicbitem)
 
         self.ROIComboBox.Items[0].IsSelected = True
 
     def build_plan_list(self, beamset, selected_plan=None, casedata=None):
         # Build the list of plans to select from.
-        if casedata and selected_plan in casedata.TreatmentPlans:
-            plans = [{'BeamSet': bs,
-                      'Plan': plan,
-                      'Selected': bs == beamset}
-                     for plan in casedata.TreatmentPlans
-                     for bs in plan.BeamSets]
-        elif selected_plan:
-            plans = [{'BeamSet': beamset,
-                      'Plan': selected_plan,
-                      'Selected': bs == beamset}
-                     for bs in selected_plan.BeamSets]
+
+        if selected_plan:
+            plans = []
+
+            if casedata is None:
+                casedata = MockObject()
+                casedata.TreatmentPlans = [selected_plan]
+
+            for plan in casedata.TreatmentPlans:
+                plans += [{'BeamSet': bs,
+                           'Plan': plan,
+                           'Selected': bs.UniqueId == beamset.UniqueId}
+                          for bs in plan.BeamSets]
+                plans.append(None)
+
+            # Remove the extra "None"
+            plans.pop()
         else:
             plans = [{'BeamSet': beamset,
                       'Plan': 'Current Plan',
                       'Selected': True}]
 
+        if casedata and selected_plan in casedata.TreatmentPlans:
+            plans = [{'BeamSet': bs,
+                      'Plan': plan,
+                      'Selected': bs.UniqueId == beamset.UniqueId}
+                     for plan in casedata.TreatmentPlans
+                     for bs in plan.BeamSets]
+        elif selected_plan:
+            plans = [{'BeamSet': beamset,
+                      'Plan': selected_plan,
+                      'Selected': bs.UniqueId == beamset.UniqueId}
+                     for bs in selected_plan.BeamSets]
+
+        _logger.debug(f'{plans=}')
+
+        self.plans = plans
+
         self.PlanSelectComboBox.Items.Clear()
 
-        lastplan = plans[0]['Plan']
         for plandata in plans:
-            if lastplan != plandata['Plan']:
+            if plandata is None:
                 self.PlanSelectComboBox.Items.Add(Separator())
-            planitem = PlanComboBoxItem(plandata)
-            _logger.debug(f'Added {planitem=} to combobox. '
-                          f'{planitem.Content.data=}')
+                continue
+            planitem = ComboBoxItem()
+            planname = f"{obj_name(plandata['Plan'])}"
+            bsname = f"{obj_name(plandata['BeamSet'])}"
+
+            planitem.Content = f"{planname} -- {bsname}"
+            _logger.debug(f'Added {planitem=} to combobox. ')
             self.PlanSelectComboBox.Items.Add(planitem)
+            if plandata['Selected']:
+                planitem.IsSelected = plandata['Selected']
+                self.active_plandata = plandata
+
+        _logger.debug("Added plans to combobox")
 
         # Finally, rebuild the ROI list
         self.build_roi_list(beamset)
 
     def SiteChanged(self, sender, event):
-        _logger.debug(f'Site change {sender.SelectedItem.Content=}'
+        if sender.SelectedItem is None:
+            return
+
+        _logger.debug(f'Site change {sender.SelectedItem=}'
                       f' {self.active_site=}')
         if sender.SelectedItem.Content != self.active_site:
             self.active_site = sender.SelectedItem.Content
             self.build_labels()
 
+    def PlanChanged(self, sender, event):
+        if sender.SelectedItem is None:
+            return
+
+        _logger.debug(f'{sender=} {sender.SelectedItem=} {event=}')
+        if sender.SelectedItem.Content != sender.Text:
+            plandataidx = sender.Items.IndexOf(sender.SelectedItem)
+            self.active_plandata = self.plans[plandataidx]
+            self.build_roi_list(self.active_plandata['BeamSet'])
+
     def ROIChanged(self, sender, event):
         if sender.SelectedItem is None:
             return
 
-        plandata = self.PlanSelectComboBox.SelectedItem.Content.data
+        _logger.debug(f"{self.PlanSelectComboBox.SelectedItem=}")
 
-        _logger.debug(f'ROI change {sender.SelectedItem.Content=}'
+        _logger.debug(f'ROI change {sender.SelectedItem=}'
                       f' {self.roi_data=}')
         if sender.SelectedItem.Content != sender.Text:
             _logger.debug(f'Roi changed from {sender.Text}'
                           f' to {sender.SelectedItem.Content}')
-            beamset = plandata['BeamSet']
-            rxdata = sender.SelectedItem.Content.data
-            self.roi_data = beamset_conformity_indices(beamset, rxdata)
+            beamset = self.active_plandata['BeamSet']
+            rxdataidx = sender.Items.IndexOf(sender.SelectedItem)
+            rxdata = self.pdrlist[rxdataidx]
+            self.roi_data = beamset_conformity_indices(beamset,
+                                                       rxdata.OnStructure,
+                                                       rxdata.DoseValue)
 
             self.build_labels()
 
@@ -518,14 +605,6 @@ class MyWindow(RayWindow):
 
     def build_labels(self):
         _logger.debug("Rebuilding labels")
-        site = self.active_site
-        roi_data = self.roi_data
-
-        site_idx = DoseIndices[site]
-
-        vol_range = site_idx.volumes
-
-        indices = site_idx.index_names & roi_data.keys()
 
         self.DosesGrid.Children.Clear()
 
@@ -536,17 +615,47 @@ class MyWindow(RayWindow):
         self.DosesGrid.ColumnDefinitions.Add(ColumnDefinition())
         self.DosesGrid.ColumnDefinitions.Add(ColumnDefinition())
 
-        for row, index_name in enumerate(indices):
+        _logger.debug("DoseIndices loading")
+        site_idx = DoseIndices[self.active_site]
+
+        vol_range = site_idx.volumes
+
+        _logger.debug("Updating ROI text")
+        if self.roi_data is None:
+            # Didn't get data back, likely we don't have dose calculated
+            # Show the dose not calculated message and move on.
+            _logger.debug("No roi_data, failed calculation. {self.roi_data=}")
+
+            self.ROIVolume.Text = "--"
+
+            # No indicies to be shown, but add the row definition for the
+            # warning message
+            indices = set()
 
             self.DosesGrid.RowDefinitions.Add(RowDefinition())
 
-            idx_header_label = IndexHeader(index_name)
+            roi_vol = None
+
+            self.DosesGrid.Children.Add(self.ErrorBlock)
+
+        else:
+            self.ROIVolume.Text = f"{self.roi_data['ROIvol']:0.2f}"
+
+            indices = site_idx.index_names & self.roi_data.keys()
+
+            roi_vol = self.roi_data['ROIvol']
+
+        for row, diname in enumerate(indices):
+
+            self.DosesGrid.RowDefinitions.Add(RowDefinition())
+
+            idx_header_label = IndexHeader(diname)
             self.DosesGrid.SetRow(idx_header_label, row + 1)
 
             self.DosesGrid.SetColumn(idx_header_label, 0)
             self.DosesGrid.Children.Add(idx_header_label)
 
-            goal_value = BorderedTextBoxBlack(f'{roi_data[index_name]:0.2f}')
+            goal_value = BorderedTextBoxBlack(f'{self.roi_data[diname]:0.2f}')
 
             self.DosesGrid.SetRow(goal_value, row + 1)
             self.DosesGrid.SetColumn(goal_value, 1)
@@ -554,7 +663,7 @@ class MyWindow(RayWindow):
 
         for col, size in enumerate(vol_range):
             # Select the column with the correct size for PTV
-            if vol_range[size][0] <= roi_data['ROIvol'] < vol_range[size][1]:
+            if roi_vol and vol_range[size][0] <= roi_vol < vol_range[size][1]:
                 self.DosesGrid.SetColumn(self.ActiveVolume, col + 2)
                 self.DosesGrid.Children.Add(self.ActiveVolume)
 
@@ -566,9 +675,15 @@ class MyWindow(RayWindow):
             self.DosesGrid.SetColumn(header_label, col + 2)
             self.DosesGrid.Children.Add(header_label)
 
-            for row, index_name in enumerate(indices):
-                range_label = GoalBorderedText(site_idx[size][index_name])
+            for row, diname in enumerate(indices):
+                range_label = GoalBorderedText(site_idx[size][diname])
 
                 self.DosesGrid.SetRow(range_label, row + 1)
                 self.DosesGrid.SetColumn(range_label, col + 2)
                 self.DosesGrid.Children.Add(range_label)
+
+
+def show_indices_dialog(beamset, plan=None, casedata=None):
+    indices_dialog = ConformityIndicesWindow(beamset, plan, casedata)
+    result = indices_dialog.ShowDialog()
+    return result
