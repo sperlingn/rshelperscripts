@@ -67,6 +67,10 @@ INDEX_DIR_SMALLER_BETTER = {'RTOGCI': True,
                             'GI': True,
                             'HI': True}
 
+BODYSITE_MAPPING = {'Brain': 'Brain',
+                    'Head & Neck': 'Brain',
+                    'Thorax': 'Lung'}
+
 
 class BorderedTextBoxBlack(Border):
     def __init__(self, *args, **kwargs):
@@ -419,8 +423,9 @@ class ConformityIndicesWindow(RayWindow):
 
         # Build the list of sites and add the OnChanged Event Callback
         sites = DoseIndices.keys()
+        self.active_site = BODYSITE_MAPPING.get(casedata.BodySite,
+                                                self.active_site)
         self.build_site_dropdown(sites)
-        # self.Site.SelectionChanged += self.SiteChanged
 
         self.build_labels()
 
