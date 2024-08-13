@@ -7,7 +7,8 @@ from System.Windows.Controls import (Border, TextBlock, RowDefinition,
                                      ColumnDefinition, ComboBoxItem, Separator)
 from System.Windows.Documents import Bold, Run, LineBreak
 from System.Windows.Forms import SaveFileDialog, DialogResult
-from System.Windows.Input import KeyBinding, KeyGesture, Key, ModifierKeys
+from System.Windows.Input import Key, ModifierKeys
+from System.Collections.Generic import List
 
 from .external import get_current, obj_name, RayWindow
 from .mock_objects import MockObject, MockPrescriptionDoseReference
@@ -532,7 +533,8 @@ class ConformityIndicesWindow(RayWindow):
 </Setter>
 <Setter Property="BorderBrush" TargetName="splitBorder" Value="#FF569DE5"/>
                                             </MultiDataTrigger>
-                                            <Trigger Property="IsEnabled" Value="False">
+                                            <Trigger Property="IsEnabled"
+                                                     Value="False">
     <Setter Property="Fill" TargetName="Arrow" Value="#FFBFBFBF"/>
                                             </Trigger>
                                             <MultiDataTrigger>
@@ -656,7 +658,7 @@ class ConformityIndicesWindow(RayWindow):
                 </ComboBox>
             </StackPanel>
             <Button x:Name="SaveButton" DockPanel.Dock="Right" Padding="2,0"
-                    BorderBrush="{x:Null}" Background="{x:Null}" Click="SaveAs">
+                   BorderBrush="{x:Null}" Background="{x:Null}" Click="SaveAs">
                 <Canvas Width="40" Height="40">
                     <Path Data="F1 M 0,0 L -7.52,-7.52 C -8.32,-8.32
                     -9.44,-8.64 -10.56,-8.64 L -34.56,-8.64 C -36.96,-8.64
@@ -1072,7 +1074,10 @@ class ConformityIndicesWindow(RayWindow):
             renderTargetBitmap.Render(self.window)
 
             png = PngBitmapEncoder()
-            png.Frames.Add(BitmapFrame.Create(renderTargetBitmap))
+
+            frames = List[BitmapFrame]()
+            frames.Add(BitmapFrame.Create(renderTargetBitmap))
+            png.Frames = frames
 
             fileout = savedialog.OpenFile()
             png.Save(fileout)
@@ -1081,20 +1086,18 @@ class ConformityIndicesWindow(RayWindow):
         else:
             _logger.debug(f"SaveAs Dialog cancelled or failed ({result=})")
 
-
         self.SaveButton.Visibility = Visibility.Visible
         # self.PlanExpander.IsExpanded = expanderstate
 
     def SaveWindow(filename):
         _logger.debug("Saving window image to {filename=}.")
 
-
     def OnKeyDown(self, sender, event):
-        if event.Key == Key.S and event.KeyboardDevice.Modifiers == ModifierKeys.Control:
-            _logger.debug(f"Ctrl+S Pressed.")
+        kd = event.KeyboardDevice
+        if event.Key == Key.S and kd.Modifiers == ModifierKeys.Control:
+            _logger.debug("Ctrl+S Pressed.")
             self.SaveAs(sender, event)
             event.Handled = True
-
 
 
 def show_indices_dialog(beamset, plan=None, casedata=None):
