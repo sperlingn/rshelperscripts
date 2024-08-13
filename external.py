@@ -174,29 +174,6 @@ def _await_user_input_mb(message):
     return Show_OK(f'{message}', "Awaiting Input", ontop=True)
 
 
-class MockObject(object):
-    def __getattr__(self, attr):
-        setattr(self, attr, MockObject())
-        return getattr(self, attr)
-
-
-class MockStructure(MockObject):
-    #  Name: type[str]  # Wait for Py 3.10 for typing
-
-    def __init__(self, name='ROI_1', roitype='Unknown'):
-        self.Name = name
-        self.OrganData.OrganType = roitype
-
-
-class MockPrescriptionDoseReference(MockObject):
-    # DoseValue: type[float]  # Wait for Py 3.10 for typing
-    # OnStructure: type[MockStructure]  # Wait for Py 3.10 for typing
-
-    def __init__(self, roi=None, dosevalue=1000):
-        self.OnStructure = MockStructure() if roi is None else roi
-        self.DoseValue = dosevalue
-
-
 try:
     from connect import RayWindow
 except ImportError:
@@ -222,10 +199,17 @@ except ImportError:
     # Replacement functions when not running in RS
     IN_RAYSTATION = False
 
+    from .mock_objects import MockPatient
+
     def get_current(name):
         # TODO: Might want to return a sample object that has reasonable
         # facimiles of the real objects for debugging.
-        return None
+        if name == 'Patient':
+            return MockPatient()
+        elif name == '':
+            return None
+        else:
+            return None
 
     class _CompositeActionOrig(_CompositeActionDummy):
         pass
