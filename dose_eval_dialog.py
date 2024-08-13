@@ -1,11 +1,16 @@
 import logging
-from System.Windows.Media import Brushes
+from System.Windows import Visibility
+from System.Windows.Media import PixelFormats, Brushes, VisualTreeHelper
+from System.Windows.Media.Imaging import (RenderTargetBitmap, PngBitmapEncoder,
+                                          BitmapFrame)
 from System.Windows.Controls import (Border, TextBlock, RowDefinition,
                                      ColumnDefinition, ComboBoxItem, Separator)
 from System.Windows.Documents import Bold, Run, LineBreak
+from System.Windows.Forms import SaveFileDialog, DialogResult
+from System.Windows.Input import KeyBinding, KeyGesture, Key, ModifierKeys
 
-from .external import (get_current, obj_name, MockObject,
-                       MockPrescriptionDoseReference, RayWindow)
+from .external import get_current, obj_name, RayWindow
+from .mock_objects import MockObject, MockPrescriptionDoseReference
 from .plans import beamset_conformity_indices
 
 from math import inf
@@ -221,19 +226,59 @@ class ConformityIndicesWindow(RayWindow):
         WindowStartupLocation="CenterOwner"
         ResizeMode="NoResize"
         WindowStyle="ThreeDBorderWindow" MinWidth="192"
-        FontSize="24">
+        FontSize="24"
+        KeyDown="OnKeyDown">
+
+
 
     <Window.Resources>
-        <Style TargetType="{x:Type StackPanel}">
+
+        <Style x:Key="SaveHiddenControlStyle" TargetType="{x:Type Control}">
+            <Style.Triggers>
+                <DataTrigger Binding="{Binding Visibility,
+                                ElementName=SaveButton}"
+                             Value="Collapsed">
+                    <Setter Property="Background" Value="Transparent"/>
+                </DataTrigger>
+            </Style.Triggers>
+        </Style>
+        <Style x:Key="SaveHiddenPanelStyle" TargetType="{x:Type Panel}">
+            <Style.Triggers>
+                <DataTrigger Binding="{Binding Visibility,
+                                ElementName=SaveButton}"
+                             Value="Collapsed">
+                    <Setter Property="Background" Value="Transparent"/>
+                </DataTrigger>
+            </Style.Triggers>
+        </Style>
+        <Style x:Key="SaveHiddenStackPanelStyle"
+               TargetType="{x:Type StackPanel}">
+            <Style.Triggers>
+                <DataTrigger Binding="{Binding Visibility,
+                                ElementName=SaveButton}"
+                             Value="Collapsed">
+                    <Setter Property="Background" Value="Transparent"/>
+                </DataTrigger>
+            </Style.Triggers>
+        </Style>
+        <Style BasedOn="{StaticResource SaveHiddenStackPanelStyle}"
+               TargetType="{x:Type StackPanel}">
             <Setter Property="Margin" Value="0"/>
             <Style.Triggers>
                 <DataTrigger Binding="{Binding Visibility,
-                    ElementName=PlanSelectPanel}" Value="Collapsed">
+                                ElementName=PlanSelectPanel}"
+                             Value="Collapsed">
                     <Setter Property="Visibility" Value="Visible"/>
                 </DataTrigger>
             </Style.Triggers>
         </Style>
-        <Style TargetType="{x:Type Label}">
+
+        <Style BasedOn="{StaticResource SaveHiddenPanelStyle}"
+               TargetType="{x:Type Grid}"/>
+        <Style BasedOn="{StaticResource SaveHiddenControlStyle}"
+               TargetType="{x:Type ComboBox}"/>
+        <Style BasedOn="{StaticResource SaveHiddenControlStyle}"
+               TargetType="{x:Type Label}">
             <Setter Property="VerticalAlignment" Value="Center"/>
         </Style>
         <Style TargetType="{x:Type ColumnDefinition}">
@@ -243,8 +288,11 @@ class ConformityIndicesWindow(RayWindow):
             <Setter Property="Height" Value="Auto"/>
         </Style>
 
-        <Style x:Key="ExpanderButton" TargetType="{x:Type ToggleButton}">
+        <Style BasedOn="{StaticResource SaveHiddenControlStyle}"
+               x:Key="ExpanderButton" TargetType="{x:Type ToggleButton}">
             <Setter Property="Height" Value="20"/>
+            <Setter Property="Visibility"
+                    Value="{Binding Visibility, ElementName=SaveButton}"/>
             <Style.Triggers>
                 <Trigger Property="IsChecked" Value="True">
                     <Setter Property="Content" Value="⮝"/>
@@ -256,7 +304,8 @@ class ConformityIndicesWindow(RayWindow):
                 </Trigger>
             </Style.Triggers>
         </Style>
-        <Style x:Key="ExpanderPanel" TargetType="{x:Type Expander}">
+        <Style BasedOn="{StaticResource SaveHiddenControlStyle}"
+               x:Key="ExpanderPanel" TargetType="{x:Type Expander}">
             <Setter Property="Template">
                 <Setter.Value>
                     <ControlTemplate TargetType="{x:Type Expander}">
@@ -267,8 +316,7 @@ class ConformityIndicesWindow(RayWindow):
                                               Visibility="Collapsed"/>
                             <ToggleButton x:Name="HeaderSite"
                                 DockPanel.Dock="Bottom"
-                                IsChecked="{Binding IsExpanded,
-                                    Mode=TwoWay,
+                                IsChecked="{Binding IsExpanded, Mode=TwoWay,
                                     RelativeSource={RelativeSource
                                         TemplatedParent}}"
                                 Style="{StaticResource ExpanderButton}"/>
@@ -282,19 +330,303 @@ class ConformityIndicesWindow(RayWindow):
                                 <Setter Property="Foreground"
         Value="{DynamicResource {x:Static SystemColors.GrayTextBrushKey}}"/>
                             </Trigger>
+                            <DataTrigger Binding="{Binding Visibility,
+                                    ElementName=SaveButton}" Value="Collapsed">
+                                <Setter TargetName="ExpandSite"
+                                        Property="Visibility" Value="Visible"/>
+                            </DataTrigger>
                         </ControlTemplate.Triggers>
                     </ControlTemplate>
                 </Setter.Value>
             </Setter>
         </Style>
 
+        <ControlTemplate x:Key="PrintableComboBoxTemplate"
+                         TargetType="{x:Type ComboBox}">
+            <Grid x:Name="templateRoot" SnapsToDevicePixels="True">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*"/>
+                    <ColumnDefinition
+                        MinWidth="{DynamicResource {x:Static
+                            SystemParameters.VerticalScrollBarWidthKey}}"
+                        Width="0"/>
+                </Grid.ColumnDefinitions>
+                <Popup x:Name="PART_Popup" AllowsTransparency="True"
+                       Grid.ColumnSpan="2" Margin="1" Placement="Bottom"
+                       IsOpen="{Binding IsDropDownOpen, Mode=TwoWay,
+                            RelativeSource={RelativeSource TemplatedParent}}"
+                       PopupAnimation="{DynamicResource
+                        {x:Static
+                         SystemParameters.ComboBoxPopupAnimationKey}}">
+                    <Border x:Name="DropDownBorder" BorderThickness="1"
+    BorderBrush="{DynamicResource {x:Static SystemColors.WindowFrameBrushKey}}"
+    Background="{DynamicResource {x:Static SystemColors.WindowBrushKey}}">
+                        <ScrollViewer x:Name="DropDownScrollViewer">
+                            <Grid x:Name="grid"
+                                  RenderOptions.ClearTypeHint="Enabled">
+                                <Canvas x:Name="canvas"
+                                        HorizontalAlignment="Left"
+                                        Height="0" VerticalAlignment="Top"
+                                        Width="0">
+                                    <Rectangle x:Name="OpaqueRect"
+    Fill="{Binding Background, ElementName=DropDownBorder}"
+    Height="{Binding ActualHeight, ElementName=DropDownBorder}"
+    Width="{Binding ActualWidth, ElementName=DropDownBorder}"/>
+                                </Canvas>
+                                <ItemsPresenter x:Name="ItemsPresenter"
+    KeyboardNavigation.DirectionalNavigation="Contained"
+    SnapsToDevicePixels="{TemplateBinding SnapsToDevicePixels}"/>
+                            </Grid>
+                        </ScrollViewer>
+                    </Border>
+                </Popup>
+                <ToggleButton x:Name="toggleButton"
+                              BorderBrush="{TemplateBinding BorderBrush}"
+                              BorderThickness="{TemplateBinding
+                                BorderThickness}"
+                              Background="{TemplateBinding Background}"
+                              Grid.ColumnSpan="2"
+                              IsChecked="{Binding IsDropDownOpen,
+                                Mode=TwoWay, RelativeSource={RelativeSource
+                                TemplatedParent}}">
+                    <ToggleButton.Style>
+                        <Style TargetType="{x:Type ToggleButton}">
+                            <Setter Property="OverridesDefaultStyle"
+                                    Value="True"/>
+                            <Setter Property="IsTabStop" Value="False"/>
+                            <Setter Property="Focusable" Value="False"/>
+                            <Setter Property="ClickMode" Value="Press"/>
+                            <Setter Property="Template">
+                                <Setter.Value>
+                                    <ControlTemplate
+                                        TargetType="{x:Type ToggleButton}">
+<Border x:Name="templateRoot" BorderBrush="#FFACACAC"
+        BorderThickness="{TemplateBinding BorderThickness}"
+            SnapsToDevicePixels="True">
+    <Border.Background>
+        <LinearGradientBrush EndPoint="0,1" StartPoint="0,0">
+            <GradientStop Color="#FFF0F0F0" Offset="0"/>
+            <GradientStop Color="#FFE5E5E5" Offset="1"/>
+        </LinearGradientBrush>
+    </Border.Background>
+    <Border x:Name="splitBorder" BorderBrush="Transparent"
+            BorderThickness="1" HorizontalAlignment="Right"
+            Margin="0" SnapsToDevicePixels="True"
+            Width="{DynamicResource
+                {x:Static SystemParameters.VerticalScrollBarWidthKey}}">
+        <Path x:Name="Arrow" Data="F1M0,0L2.667,2.66665
+                5.3334,0 5.3334,-1.78168 2.6667,0.88501 0,-1.78168 0,0z"
+              Fill="#FF606060" HorizontalAlignment="Center" Margin="0"
+              VerticalAlignment="Center"/>
+    </Border>
+</Border>
+                                        <ControlTemplate.Triggers>
+<DataTrigger Binding="{Binding Visibility, ElementName=SaveButton}"
+             Value="Collapsed">
+    <Setter Property="Background" TargetName="templateRoot"
+            Value="Transparent"/>
+    <Setter Property="BorderBrush" TargetName="templateRoot"
+            Value="Transparent"/>
+    <Setter Property="Background" TargetName="splitBorder"
+            Value="Transparent"/>
+    <Setter Property="BorderBrush" TargetName="splitBorder"
+            Value="Transparent"/>
+    <Setter Property="Fill" TargetName="Arrow" Value="Transparent"/>
+</DataTrigger>
+                                            <MultiDataTrigger>
+<MultiDataTrigger.Conditions>
+    <Condition Binding="{Binding IsEditable,
+        RelativeSource={RelativeSource FindAncestor, AncestorLevel=1,
+            AncestorType={x:Type ComboBox}}}" Value="true"/>
+    <Condition Binding="{Binding IsMouseOver,
+        RelativeSource={RelativeSource Self}}" Value="false"/>
+    <Condition Binding="{Binding IsPressed,
+        RelativeSource={RelativeSource Self}}" Value="false"/>
+    <Condition Binding="{Binding IsEnabled,
+        RelativeSource={RelativeSource Self}}" Value="true"/>
+</MultiDataTrigger.Conditions>
+<Setter Property="Background" TargetName="templateRoot" Value="White"/>
+<Setter Property="BorderBrush" TargetName="templateRoot" Value="#FFABADB3"/>
+<Setter Property="Background" TargetName="splitBorder" Value="Transparent"/>
+<Setter Property="BorderBrush" TargetName="splitBorder" Value="Transparent"/>
+                                            </MultiDataTrigger>
+    <Trigger Property="IsMouseOver" Value="True">
+        <Setter Property="Fill" TargetName="Arrow" Value="Black"/>
+    </Trigger>
+                                            <MultiDataTrigger>
+                                                <MultiDataTrigger.Conditions>
+<Condition Binding="{Binding IsMouseOver,
+    RelativeSource={RelativeSource Self}}" Value="true"/>
+<Condition Binding="{Binding IsEditable,
+    RelativeSource={RelativeSource FindAncestor, AncestorLevel=1,
+        AncestorType={x:Type ComboBox}}}" Value="false"/>
+                                                </MultiDataTrigger.Conditions>
+<Setter Property="Background" TargetName="templateRoot">
+                                                    <Setter.Value>
+<LinearGradientBrush EndPoint="0,1" StartPoint="0,0">
+    <GradientStop Color="#FFECF4FC" Offset="0"/>
+    <GradientStop Color="#FFDCECFC" Offset="1"/>
+</LinearGradientBrush>
+                                                    </Setter.Value>
+                                                </Setter>
+<Setter Property="BorderBrush" TargetName="templateRoot" Value="#FF7EB4EA"/>
+                                            </MultiDataTrigger>
+                                            <MultiDataTrigger>
+                                                <MultiDataTrigger.Conditions>
+<Condition Binding="{Binding IsMouseOver,
+    RelativeSource={RelativeSource Self}}" Value="true"/>
+<Condition Binding="{Binding IsEditable,
+    RelativeSource={RelativeSource FindAncestor, AncestorLevel=1,
+        AncestorType={x:Type ComboBox}}}" Value="true"/>
+                                                </MultiDataTrigger.Conditions>
+<Setter Property="Background" TargetName="templateRoot" Value="White"/>
+<Setter Property="BorderBrush" TargetName="templateRoot" Value="#FF7EB4EA"/>
+<Setter Property="Background" TargetName="splitBorder">
+                                                    <Setter.Value>
+    <LinearGradientBrush EndPoint="0,1" StartPoint="0,0">
+        <GradientStop Color="#FFEBF4FC" Offset="0"/>
+        <GradientStop Color="#FFDCECFC" Offset="1"/>
+    </LinearGradientBrush>
+                                                </Setter.Value>
+                                                </Setter>
+<Setter Property="BorderBrush" TargetName="splitBorder" Value="#FF7EB4EA"/>
+                                            </MultiDataTrigger>
+<Trigger Property="IsPressed" Value="True">
+    <Setter Property="Fill" TargetName="Arrow" Value="Black"/>
+</Trigger>
+                                            <MultiDataTrigger>
+                                                <MultiDataTrigger.Conditions>
+<Condition Binding="{Binding IsPressed, RelativeSource={RelativeSource Self}}"
+           Value="true"/>
+<Condition Binding="{Binding IsEditable,
+    RelativeSource={RelativeSource FindAncestor, AncestorLevel=1,
+        AncestorType={x:Type ComboBox}}}" Value="false"/>
+                                                </MultiDataTrigger.Conditions>
+<Setter Property="Background" TargetName="templateRoot">
+<Setter.Value>
+    <LinearGradientBrush EndPoint="0,1" StartPoint="0,0">
+        <GradientStop Color="#FFDAECFC" Offset="0"/>
+        <GradientStop Color="#FFC4E0FC" Offset="1"/>
+    </LinearGradientBrush>
+</Setter.Value>
+                                                </Setter>
+<Setter Property="BorderBrush" TargetName="templateRoot" Value="#FF569DE5"/>
+                                            </MultiDataTrigger>
+                                            <MultiDataTrigger>
+                                                <MultiDataTrigger.Conditions>
+<Condition Binding="{Binding IsPressed,
+    RelativeSource={RelativeSource Self}}" Value="true"/>
+<Condition Binding="{Binding IsEditable,
+    RelativeSource={RelativeSource FindAncestor, AncestorLevel=1,
+    AncestorType={x:Type ComboBox}}}" Value="true"/>
+                                                </MultiDataTrigger.Conditions>
+<Setter Property="Background" TargetName="templateRoot" Value="White"/>
+<Setter Property="BorderBrush" TargetName="templateRoot" Value="#FF569DE5"/>
+<Setter Property="Background" TargetName="splitBorder">
+<Setter.Value>
+    <LinearGradientBrush EndPoint="0,1" StartPoint="0,0">
+        <GradientStop Color="#FFDAEBFC" Offset="0"/>
+        <GradientStop Color="#FFC4E0FC" Offset="1"/>
+    </LinearGradientBrush>
+</Setter.Value>
+</Setter>
+<Setter Property="BorderBrush" TargetName="splitBorder" Value="#FF569DE5"/>
+                                            </MultiDataTrigger>
+                                            <Trigger Property="IsEnabled" Value="False">
+    <Setter Property="Fill" TargetName="Arrow" Value="#FFBFBFBF"/>
+                                            </Trigger>
+                                            <MultiDataTrigger>
+                                                <MultiDataTrigger.Conditions>
+<Condition Binding="{Binding IsEnabled,
+    RelativeSource={RelativeSource Self}}" Value="false"/>
+<Condition Binding="{Binding IsEditable,
+    RelativeSource={RelativeSource FindAncestor,
+    AncestorLevel=1, AncestorType={x:Type ComboBox}}}" Value="false"/>
+                                                </MultiDataTrigger.Conditions>
+<Setter Property="Background" TargetName="templateRoot" Value="#FFF0F0F0"/>
+<Setter Property="BorderBrush" TargetName="templateRoot" Value="#FFD9D9D9"/>
+                                            </MultiDataTrigger>
+                                            <MultiDataTrigger>
+                                                <MultiDataTrigger.Conditions>
+<Condition Binding="{Binding IsEnabled,
+    RelativeSource={RelativeSource Self}}" Value="false"/>
+<Condition Binding="{Binding IsEditable,
+    RelativeSource={RelativeSource FindAncestor, AncestorLevel=1,
+        AncestorType={x:Type ComboBox}}}" Value="true"/>
+                                                </MultiDataTrigger.Conditions>
+<Setter Property="Background" TargetName="templateRoot" Value="White"/>
+<Setter Property="BorderBrush" TargetName="templateRoot" Value="#FFBFBFBF"/>
+<Setter Property="Background" TargetName="splitBorder" Value="Transparent"/>
+<Setter Property="BorderBrush" TargetName="splitBorder" Value="Transparent"/>
+                                            </MultiDataTrigger>
+                                        </ControlTemplate.Triggers>
+                                    </ControlTemplate>
+                                </Setter.Value>
+                            </Setter>
+                        </Style>
+                    </ToggleButton.Style>
+                </ToggleButton>
+                <ContentPresenter
+                 x:Name="contentPresenter"
+                    ContentTemplate="{TemplateBinding
+                        SelectionBoxItemTemplate}"
+                    Content="{TemplateBinding SelectionBoxItem}"
+                    ContentStringFormat="{TemplateBinding
+                        SelectionBoxItemStringFormat}"
+                    HorizontalAlignment="{TemplateBinding
+                        HorizontalContentAlignment}"
+                    IsHitTestVisible="False" Margin="{TemplateBinding Padding}"
+                    SnapsToDevicePixels="{TemplateBinding SnapsToDevicePixels}"
+                    VerticalAlignment="{TemplateBinding
+                        VerticalContentAlignment}"/>
+            </Grid>
+            <ControlTemplate.Triggers>
+                <Trigger Property="HasItems" Value="False">
+                    <Setter Property="Height" TargetName="DropDownBorder"
+                            Value="95"/>
+                </Trigger>
+                <MultiTrigger>
+                    <MultiTrigger.Conditions>
+                        <Condition Property="IsGrouping" Value="True"/>
+                    </MultiTrigger.Conditions>
+                    <Setter Property="ScrollViewer.CanContentScroll"
+                            Value="False"/>
+                </MultiTrigger>
+                <Trigger Property="CanContentScroll"
+                         SourceName="DropDownScrollViewer" Value="False">
+                    <Setter Property="Canvas.Top" TargetName="OpaqueRect"
+                            Value="{Binding VerticalOffset,
+                        ElementName=DropDownScrollViewer}"/>
+                    <Setter Property="Canvas.Left" TargetName="OpaqueRect"
+                            Value="{Binding HorizontalOffset,
+                        ElementName=DropDownScrollViewer}"/>
+                </Trigger>
+            </ControlTemplate.Triggers>
+        </ControlTemplate>
+
+
     </Window.Resources>
 
-    <StackPanel Background="#FFE6E6E6" MinHeight="20" Margin="0">
-        <Expander Style="{StaticResource ExpanderPanel}">
+    <Window.Style>
+        <Style TargetType="{x:Type Window}">
+            <Setter Property="Background" Value="#FFE6E6E6"/>
+            <Style.Triggers>
+                <DataTrigger Binding="{Binding Visibility,
+                                       ElementName=SaveButton}"
+                             Value="Collapsed">
+                    <Setter Property="Background" Value="White"/>
+                </DataTrigger>
+            </Style.Triggers>
+        </Style>
+    </Window.Style>
+
+    <StackPanel x:Name="MainPanel" MinHeight="20" Margin="0">
+        <Expander Style="{StaticResource ExpanderPanel}"
+                  x:Name="PlanExpander">
             <DockPanel>
                 <Label Content="Plan to evaluate: "/>
                 <ComboBox x:Name="PlanSelectComboBox"
+                          Template="{StaticResource PrintableComboBoxTemplate}"
                           SelectionChanged="PlanChanged">
                     <ComboBoxItem/>
                     <Separator/>
@@ -305,6 +637,7 @@ class ConformityIndicesWindow(RayWindow):
 
         <DockPanel LastChildFill="False">
             <ComboBox x:Name="ROIComboBox" DockPanel.Dock="Left"
+                      Template="{StaticResource PrintableComboBoxTemplate}"
                       SelectionChanged="ROIChanged">
                 <ComboBoxItem Content="PTV50" IsSelected="True"/>
             </ComboBox>
@@ -317,27 +650,41 @@ class ConformityIndicesWindow(RayWindow):
             </Label>
             <StackPanel Orientation="Horizontal" DockPanel.Dock="Right">
                 <Label Content="Site:"/>
-                <ComboBox x:Name="Site" SelectionChanged="SiteChanged">
+                <ComboBox x:Name="Site" SelectionChanged="SiteChanged"
+                        Template="{StaticResource PrintableComboBoxTemplate}">
                     <ComboBoxItem Content="Unknown" IsSelected="True"/>
                 </ComboBox>
             </StackPanel>
+            <Button x:Name="SaveButton" DockPanel.Dock="Right" Padding="2,0"
+                    BorderBrush="{x:Null}" Background="{x:Null}" Click="SaveAs">
+                <Canvas Width="40" Height="40">
+                    <Path Data="F1 M 0,0 L -7.52,-7.52 C -8.32,-8.32
+                    -9.44,-8.64 -10.56,-8.64 L -34.56,-8.64 C -36.96,-8.64
+                    -38.72,-6.88 -38.72,-4.48 L -38.72,27.04 C -38.72,29.44
+                    -36.96,31.36 -34.56,31.36 L -3.04,31.36 C -0.64,31.36
+                    1.28,29.44 1.28,27.04 L 1.28,3.04 C 1.28,1.92 0.8,0.8 0,0
+                    z M -18.72,25.6 C -21.92,25.6 -24.48,23.04 -24.48,19.84
+                    -24.48,16.64 -21.92,14.08 -18.72,14.08 -15.68,14.08
+                    -13.12,16.64 -13.12,19.84 -13.12,23.04 -15.68,25.6
+                    -18.72,25.6 z M -10.24,-1.6 L -10.24,7.36 C -10.24,8
+                    -10.72,8.48 -11.36,8.48 L -32,8.48 C -32.64,8.48 -33.12,8
+                    -33.12,7.36 L -33.12,-1.92 C -33.12,-2.56 -32.64,-3.04
+                    -32,-3.04 L -11.68,-3.04 C -11.36,-3.04 -11.04,-2.88
+                    -10.88,-2.72 L -10.56,-2.4 C -10.4,-2.24 -10.24,-1.92
+                    -10.24,-1.6 z"
+                    RenderTransform="1,0,0,1,38.72,8.64" Fill="#ff000000" />
+                </Canvas>
+            </Button>
         </DockPanel>
         <Border BorderThickness="0,0,1,1" BorderBrush="Black" Margin="2">
             <Grid x:Name="DosesGrid">
-                <Grid.RowDefinitions>
-                    <RowDefinition/>
-                    <RowDefinition/>
-                </Grid.RowDefinitions>
-                <Grid.ColumnDefinitions>
-                    <ColumnDefinition/>
-                    <ColumnDefinition/>
-                    <ColumnDefinition/>
-                    <ColumnDefinition/>
-                    <ColumnDefinition/>
-                    <ColumnDefinition/>
-                </Grid.ColumnDefinitions>
                 <Grid.Resources>
                     <Style TargetType="{x:Type Label}" >
+
+                        <Setter Property="BorderThickness" Value="2"/>
+                        <Setter Property="BorderBrush" Value="Black"/>
+                        <Setter Property="HorizontalContentAlignment"
+                                Value="Center"/>
                         <Style.Triggers>
                             <Trigger Property="Grid.Column" Value="0">
                                 <Setter Property="BorderThickness"
@@ -345,10 +692,6 @@ class ConformityIndicesWindow(RayWindow):
                             </Trigger>
                         </Style.Triggers>
 
-                        <Setter Property="BorderThickness" Value="2"/>
-                        <Setter Property="BorderBrush" Value="Black"/>
-                        <Setter Property="HorizontalContentAlignment"
-                                Value="Center"/>
                     </Style>
                     <Style TargetType="{x:Type TextBlock}" >
                         <Setter Property="TextAlignment" Value="Center"/>
@@ -361,24 +704,37 @@ class ConformityIndicesWindow(RayWindow):
                         <Setter Property="BorderBrush" Value="Black"/>
                     </Style>
                 </Grid.Resources>
+                <Grid.RowDefinitions>
+                    <RowDefinition/>
+                    <RowDefinition/>
+                </Grid.RowDefinitions>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition/>
+                    <ColumnDefinition/>
+                    <ColumnDefinition/>
+                    <ColumnDefinition/>
+                    <ColumnDefinition/>
+                    <ColumnDefinition/>
+                </Grid.ColumnDefinitions>
                 <Label Grid.ColumnSpan="2" Grid.Column="0" Grid.Row="0"
                        BorderThickness="0,0,1,1"/>
 
                 <Border Grid.Column="2" Grid.Row="0">
-                    <TextBlock Text="Very Small&#10;(V&lt;5cc)"/>
+                    <TextBlock Text="Very Small&#xA;(V&lt;5cc)"/>
                 </Border>
 
                 <Label Grid.Column="3" Grid.Row="0"
-                       Content="Small&#10;(5cc&lt;V&lt;10cc)" />
+                       Content="Small&#xA;(5cc&lt;V&lt;10cc)" />
                 <Label Grid.Column="4" Grid.Row="0"
-                       Content="Medium&#10;(10cc&lt;V&lt;30cc)" />
+                       Content="Medium&#xA;(10cc&lt;V&lt;30cc)" />
                 <Label Grid.Column="5" Grid.Row="0"
-                       Content="Large&#10;(V&gt;30cc)" />
+                       Content="Large&#xA;(V&gt;30cc)" />
                 <Label Grid.Column="0" Grid.Row="1" Content="CI"/>
                 <Label Grid.Column="1" Grid.Row="1" Content="Value"/>
                 <Border Grid.Column="3" Grid.Row="1">
                     <TextBlock>
                         <Run FontWeight="Bold" Text="1.24 " />
+                        <Run Text=" "/>
                         <Run Text="(1.07 - 1.55)"/>
                     </TextBlock>
                 </Border>
@@ -395,14 +751,13 @@ class ConformityIndicesWindow(RayWindow):
                 <TextBlock x:Name="ErrorBlock"
                            Grid.Column="2" Grid.ColumnSpan="4" Grid.Row="1"
                            FontSize="30" FontWeight="Bold" Foreground="Red">
-                    <Run>Dose not calculated, or an error has occured.</Run>
+                    <Run Text="Dose not calculated, or an error has occured."/>
                     <LineBreak/>
-                    <Run>Check execution log.</Run>
-                </TextBlock>
+                    <Run Text="Check execution log."/></TextBlock>
 
             </Grid>
         </Border>
-        <Button Name="btnCancel" IsCancel="true"
+        <Button x:Name="btnCancel" IsCancel="true"
                 Padding="0" Width="0" Height="0"/>
     </StackPanel>
 </Window>
@@ -412,13 +767,12 @@ class ConformityIndicesWindow(RayWindow):
 
         self.LoadComponent(self._XAML)
 
-        casedata = get_current("Case") if casedata is None else casedata
-        plan = get_current("Plan") if plan is None else plan
-        beamset = get_current("BeamSet") if beamset is None else beamset
+        self.casedata = get_current("Case") if casedata is None else casedata
+        self.plan = get_current("Plan") if plan is None else plan
+        self.beamset = get_current("BeamSet") if beamset is None else beamset
 
         self.roi_data = {'ROIvol': 0}
 
-        # self.ROIComboBox.SelectionChanged += self.ROIChanged
         self.build_plan_list(beamset, plan, casedata)
 
         # Build the list of sites and add the OnChanged Event Callback
@@ -686,6 +1040,61 @@ class ConformityIndicesWindow(RayWindow):
                 self.DosesGrid.SetRow(range_label, row + 1)
                 self.DosesGrid.SetColumn(range_label, col + 2)
                 self.DosesGrid.Children.Add(range_label)
+
+    def SaveAs(self, sender, event):
+        # Save button clicked
+        self.SaveButton.Visibility = Visibility.Collapsed
+        # expanderstate = self.PlanExpander.IsExpanded
+        # self.PlanExpander.IsExpanded = True
+
+        pt = get_current('Patient')
+
+        savedialog = SaveFileDialog()
+        fn = f"{pt.Name} -- {pt.PatientID} -- {self.PlanSelectComboBox.Text}"
+        savedialog.FileName = fn
+        savedialog.DefaultExt = '.png'
+        savedialog.Filter = "PNG files (*.png)|*.png|All files (*.*)|*.*"
+        savedialog.Title = 'Save dose indices as image'
+        result = savedialog.ShowDialog()
+
+        if result == DialogResult.OK:
+            _logger.debug(f"SaveAs OK: {result=}")
+            _logger.debug(f"{savedialog.FileName=}")
+
+            screen_dpi = VisualTreeHelper.GetDpi(self.MainPanel)
+            rtb_scale = 2
+            rtb_args = (rtb_scale*int(self.MainPanel.ActualWidth),
+                        rtb_scale*int(self.MainPanel.ActualHeight),
+                        rtb_scale*screen_dpi.PixelsPerInchX,
+                        rtb_scale*screen_dpi.PixelsPerInchY,
+                        PixelFormats.Pbgra32)
+            renderTargetBitmap = RenderTargetBitmap(*rtb_args)
+            renderTargetBitmap.Render(self.window)
+
+            png = PngBitmapEncoder()
+            png.Frames.Add(BitmapFrame.Create(renderTargetBitmap))
+
+            fileout = savedialog.OpenFile()
+            png.Save(fileout)
+            fileout.Close()
+
+        else:
+            _logger.debug(f"SaveAs Dialog cancelled or failed ({result=})")
+
+
+        self.SaveButton.Visibility = Visibility.Visible
+        # self.PlanExpander.IsExpanded = expanderstate
+
+    def SaveWindow(filename):
+        _logger.debug("Saving window image to {filename=}.")
+
+
+    def OnKeyDown(self, sender, event):
+        if event.Key == Key.S and event.KeyboardDevice.Modifiers == ModifierKeys.Control:
+            _logger.debug(f"Ctrl+S Pressed.")
+            self.SaveAs(sender, event)
+            event.Handled = True
+
 
 
 def show_indices_dialog(beamset, plan=None, casedata=None):
