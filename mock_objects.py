@@ -1,7 +1,8 @@
-from typing import Type
+from typing import List
 from random import choice, randint
 
 from System import DateTime
+
 
 class MockObject(object):
     def __getattr__(self, attr):
@@ -10,19 +11,19 @@ class MockObject(object):
 
 
 class MockPatient(MockObject):
-    Comments: Type[str] = ''
-    DateOfBirth: Type[DateTime]
-    Gender: Type[str] = ''
-    Name: Type[str] = ''
-    PatientID: Type[str] = ''
-    Cases: Type[list]
+    Comments: str = ''
+    DateOfBirth: DateTime
+    Gender: str = ''
+    Name: str = ''
+    PatientID: str = ''
+    Cases: list
 
     def __init__(self, name=None, id=None, dob=None, gender=None, cases=None):
         self.Gender = gender if gender else choice(['Male', 'Female'])
         self.PatientID = id if id else f'99{randint(0,1e6):6d}'
-        self.DateOfBirth = dob if dob else DateTime(randint(1920,2010),
-                                                    randint(1,12),
-                                                    randint(1,28))
+        self.DateOfBirth = dob if dob else DateTime(randint(1920, 2010),
+                                                    randint(1, 12),
+                                                    randint(1, 28))
         self.Name = name if name else choice(['DOE^JOHN',
                                               'DOE^JANE',
                                               'BAGGINS^BILBO',
@@ -34,7 +35,7 @@ class MockPatient(MockObject):
 
 
 class MockStructure(MockObject):
-    Name: Type[str]  # Wait for Py 3.10 for typing
+    Name: str  # Wait for Py 3.10 for typing
 
     def __init__(self, name='ROI_1', roitype='Unknown'):
         self.Name = name
@@ -42,8 +43,8 @@ class MockStructure(MockObject):
 
 
 class MockPrescriptionDoseReference(MockObject):
-    DoseValue: Type[float]  # Wait for Py 3.10 for typing
-    OnStructure: Type[MockStructure]  # Wait for Py 3.10 for typing
+    DoseValue: float  # Wait for Py 3.10 for typing
+    OnStructure: MockStructure  # Wait for Py 3.10 for typing
 
     def __init__(self, roi=None, dosevalue=1000):
         self.OnStructure = MockStructure() if roi is None else roi
@@ -51,11 +52,11 @@ class MockPrescriptionDoseReference(MockObject):
 
 
 class MockCase(MockObject):
-    TreatmentPlans: Type[list]
-    BodySite: Type[str] = ''
-    Comments: Type[str] = ''
-    CaseName: Type[str] = ''
-    PerPatientUniqueId: Type[str] = ''
+    TreatmentPlans: list
+    BodySite: str = ''
+    Comments: str = ''
+    CaseName: str = ''
+    PerPatientUniqueId: str = ''
 
     def __init__(self, plans=None):
         self.TreatmentPlans = plans if plans else []
@@ -65,8 +66,8 @@ class MockCase(MockObject):
 
 
 class MockPlan(MockObject):
-    BeamSets: Type[list]
-    DicomPlanLabel: Type[str]
+    BeamSets: list
+    DicomPlanLabel: str
 
     def __init__(self, name="Plan1"):
         self.BeamSets = []
@@ -77,8 +78,8 @@ class MockPlan(MockObject):
 
 
 class MockPrescription(MockObject):
-    PrimaryPrescriptionDoseReference: Type[MockPrescriptionDoseReference]
-    PrescriptionDoseReferences: Type[list[MockPrescriptionDoseReference]]
+    PrimaryPrescriptionDoseReference: MockPrescriptionDoseReference
+    PrescriptionDoseReferences: List[MockPrescriptionDoseReference]
 
     def __init__(self, pdrlist=None):
         try:
@@ -88,6 +89,7 @@ class MockPrescription(MockObject):
             mpdr = MockPrescriptionDoseReference()
             self.PrimaryPrescriptionDoseReference = mpdr
             self.PrescriptionDoseReferences = [mpdr]
+
 
 class MockFractionDose(MockObject):
     DoseValues = None
@@ -99,12 +101,12 @@ class MockPatientModel(MockObject):
 
 
 class MockBeamSet(MockObject):
-    Prescription: Type[MockPrescription]
-    FractionDose: Type[MockFractionDose]
-    Name: Type[str]
+    Prescription: MockPrescription
+    FractionDose: MockFractionDose
+    Name: str
 
     def __init__(self, name='BeamSet1', pdrlist=None,
-                 pm: Type[MockPatientModel]=None):
+                 pm: MockPatientModel = None):
         self.Name = name
         self.Prescription = MockPrescription(pdrlist)
         if pm:
