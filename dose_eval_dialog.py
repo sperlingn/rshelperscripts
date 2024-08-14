@@ -22,18 +22,30 @@ INDICES_DICT = {
     'Brain': {
         'Small': {
             'Vol': (0, 2),
-            'GI': {'ok': 4.57, 'min': 2.71, 'max': 8.03},
-            'PCI': {'ok': 0.56, 'min': 0.40, 'max': 0.82}
+            'GI': {'ok': 4.59, 'min': 2.54, 'max': 4.9,
+                   'median': 3.34, 'mean': 3.48, 'sd': 0.55},
+            'PCI': {'ok': 0.64, 'min': 0.61, 'max': 0.88,
+                    'median': 0.77, 'mean': 0.76, 'sd': 0.06},
+            'RTOGCI': {'ok': 1.45, 'okmin': 1, 'min': 1.03, 'max': 1.58,
+                       'median': 1.22, 'mean': 1.23, 'sd': 0.11}
         },
         'Medium': {
             'Vol': (2, 10),
-            'GI': {'ok': 4.28, 'min': 2.40, 'max': 7.29},
-            'PCI': {'ok': 0.74, 'min': 0.65, 'max': 0.88}
+            'GI': {'ok': 3.6, 'min': 2.23, 'max': 3.98,
+                   'median': 2.6, 'mean': 2.72, 'sd': 0.44},
+            'PCI': {'ok': 0.77, 'min': 0.69, 'max': 0.92,
+                    'median': 0.89, 'mean': 0.87, 'sd': 0.05},
+            'RTOGCI': {'ok': 1.25, 'okmin': 0.89, 'min': 0.99, 'max': 1.39,
+                       'median': 1.05, 'mean': 1.07, 'sd': 0.09}
         },
         'Large': {
             'Vol': (10, inf),
-            'GI': {'ok': 3.66, 'min': 2.43, 'max': 5.36},
-            'PCI': {'ok': 0.75, 'min': 0.71, 'max': 0.93}
+            'GI': {'ok': 3.17, 'min': 2, 'max': 3.1,
+                   'median': 2.62, 'mean': 2.55, 'sd': 0.31},
+            'PCI': {'ok': 0.81, 'min': 0.82, 'max': 0.94,
+                    'median': 0.9, 'mean': 0.89, 'sd': 0.04},
+            'RTOGCI': {'ok': 1.2, 'okmin': 0.92, 'min': 0.97, 'max': 1.19,
+                       'median': 1.04, 'mean': 1.06, 'sd': 0.07}
         }
     },
     'Lung': {
@@ -94,33 +106,40 @@ class BorderedTextBoxBlack(Border):
 
         self.Child.Text = textline
 
+    def add_lines(self, lines):
+        for line in lines:
+            self.Child.Inlines.Add(line)
+
 
 class GoalBorderedText(BorderedTextBoxBlack):
     def build_text(self, goal):
-        textblock = self.Child
+        textlines = [
+            Bold(Run(f"{goal['ok']:0.2f} ")),
+            Run(f"({goal['min']:0.2f} - {goal['max']:0.2f})")
+        ]
 
-        textline = Bold(Run(f"{goal['ok']:0.2f} "))
-        textblock.Inlines.Add(textline)
+        if 'sd' in goal:
+            textlines += [
+                LineBreak(),
+                Run(f"{goal['mean']}\u00b1{goal['sd']}")
+            ]
+            textlines[-1].FontSize = 12
 
-        textline = Run(f"({goal['min']:0.2f} - {goal['max']:0.2f})")
-        textblock.Inlines.Add(textline)
+        self.add_lines(textlines)
 
 
 class IndexHeader(BorderedTextBoxBlack):
     def build_text(self, index_name):
-        textblock = self.Child
+        size_dir = ["smaller", "larger"][INDEX_DIR_SMALLER_BETTER[index_name]]
+        textlines = [
+            Run(f'{index_name}'),
+            LineBreak(),
+            Run(f'({size_dir} is better)')
+        ]
 
-        textline = Run(f'{index_name}')
-        textblock.Inlines.Add(textline)
-        textblock.Inlines.Add(LineBreak())
+        textlines[2].FontSize = 12
 
-        if INDEX_DIR_SMALLER_BETTER[index_name]:
-            textline = Run('(smaller is better)')
-        else:
-            textline = Run('(larger is better)')
-
-        textline.FontSize = 12
-        textblock.Inlines.Add(textline)
+        self.add_lines(textlines)
 
 
 class SizeBorderedHeader(BorderedTextBoxBlack):
@@ -170,22 +189,6 @@ class Indices(dict):
 DoseIndices = Indices()
 
 
-class ContentWrapper:
-    data = None
-    content = None
-
-    def __init__(self, content):
-        self.content = content
-        # self.data = data
-        _logger.debug(f"Built {self=}")
-
-    def __str__(self):
-        _logger.debug(f"Getting str for content wrapper {self=}")
-        return f'{self.content}'
-
-    ToString = __str__
-
-
 class PlanComboBoxItem(ComboBoxItem):
     def __init__(self, plandata):
         super().__init__()
@@ -197,18 +200,21 @@ class PlanComboBoxItem(ComboBoxItem):
 
         _logger.debug(f"Built {self=}")
 
-        self.Content = ContentWrapper(content)
+        self.Content = content
 
 
 class TargetRoiComboBoxItem(ComboBoxItem):
     def __init__(self, roirxdata):
         super().__init__()
+
         name = f"{obj_name(roirxdata.OnStructure)}"
         dose = f"{roirxdata.DoseValue:.0f}"
 
         content = f"{name} ({dose} cGy)"
+
         _logger.debug(f"Built {self=}")
-        self.Content = ContentWrapper(content)
+
+        self.Content = content
 
 
 class ConformityIndicesWindow(RayWindow):
@@ -504,12 +510,12 @@ class ConformityIndicesWindow(RayWindow):
         AncestorType={x:Type ComboBox}}}" Value="false"/>
                                                 </MultiDataTrigger.Conditions>
 <Setter Property="Background" TargetName="templateRoot">
-<Setter.Value>
+                                                    <Setter.Value>
     <LinearGradientBrush EndPoint="0,1" StartPoint="0,0">
         <GradientStop Color="#FFDAECFC" Offset="0"/>
         <GradientStop Color="#FFC4E0FC" Offset="1"/>
     </LinearGradientBrush>
-</Setter.Value>
+                                                    </Setter.Value>
                                                 </Setter>
 <Setter Property="BorderBrush" TargetName="templateRoot" Value="#FF569DE5"/>
                                             </MultiDataTrigger>
@@ -524,17 +530,16 @@ class ConformityIndicesWindow(RayWindow):
 <Setter Property="Background" TargetName="templateRoot" Value="White"/>
 <Setter Property="BorderBrush" TargetName="templateRoot" Value="#FF569DE5"/>
 <Setter Property="Background" TargetName="splitBorder">
-<Setter.Value>
+                                                    <Setter.Value>
     <LinearGradientBrush EndPoint="0,1" StartPoint="0,0">
         <GradientStop Color="#FFDAEBFC" Offset="0"/>
         <GradientStop Color="#FFC4E0FC" Offset="1"/>
     </LinearGradientBrush>
-</Setter.Value>
-</Setter>
+                                                    </Setter.Value>
+                                                </Setter>
 <Setter Property="BorderBrush" TargetName="splitBorder" Value="#FF569DE5"/>
                                             </MultiDataTrigger>
-                                            <Trigger Property="IsEnabled"
-                                                     Value="False">
+<Trigger Property="IsEnabled" Value="False">
     <Setter Property="Fill" TargetName="Arrow" Value="#FFBFBFBF"/>
                                             </Trigger>
                                             <MultiDataTrigger>
@@ -732,7 +737,14 @@ class ConformityIndicesWindow(RayWindow):
                 <Label Grid.Column="5" Grid.Row="0"
                        Content="Large&#xA;(V&gt;30cc)" />
                 <Label Grid.Column="0" Grid.Row="1" Content="CI"/>
-                <Label Grid.Column="1" Grid.Row="1" Content="Value"/>
+                <Border x:Name="PVText" Grid.Column="1" Grid.Row="0">
+                    <TextBlock>
+                        <Run>Plan</Run>
+                        <LineBreak/>
+                        <Run>Value</Run>
+                    </TextBlock>
+                </Border>
+                <Label Grid.Column="1" Grid.Row="1" Content="2.1"/>
                 <Border Grid.Column="3" Grid.Row="1">
                     <TextBlock>
                         <Run FontWeight="Bold" Text="1.24 " />
@@ -1001,6 +1013,8 @@ class ConformityIndicesWindow(RayWindow):
 
         else:
             self.ROIVolume.Text = f"{self.roi_data['ROIvol']:0.2f}"
+
+            self.DosesGrid.Children.Add(self.PVText)
 
             indices = site_idx.index_names & self.roi_data.keys()
 
