@@ -166,6 +166,10 @@ class Overlaps(dict):
         return not any([any(f.values()) for f in self.values()])
 
     @property
+    def hasCollision(self):
+        return not self.isFalse
+
+    @property
     def beamrois_set(self):
         return set(self._gantries.keys())
 
@@ -336,7 +340,7 @@ def check_collision(plan, beam_set, silent=False, retain=False,
                     rois_set |= all_rois['Support']
                 overlaps.check_rois(rois_set)
                 _logger.debug(f"{overlaps = }")
-                if not overlaps.isFalse and not silent:
+                if overlaps.hasCollision and not silent:
                     retain = retain_on_fail
                     Show_OK("Found potential collision.\n"
                             f"Overlaps identified:\n{overlaps!s}",
@@ -361,7 +365,7 @@ def check_collision(plan, beam_set, silent=False, retain=False,
     except Warning as e:
         _logger.info(f"Stopped with warning. {e!s}", exc_info=True)
 
-    status = {'status': overlaps.isFalse,
+    status = {'status': overlaps.hasCollision,
               'UpdateComment': True,
               'overlaps': overlaps}
 
@@ -386,4 +390,4 @@ if __name__ == '__main__':
     if status['UpdateComment']:
         status = status['status']
         _logger.info(f"Updating validation status for plan to {status}.")
-        set_validation_comment(plan, beam_set, "Collision", status)
+        set_validation_comment(plan, beam_set, "Collision", not(status))

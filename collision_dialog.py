@@ -552,7 +552,7 @@ class CollisionDetectionDialogWindow(RayWindow):
         _logger.debug(f"{sender=} {event=}")
         self.update_all_leds('Unknown')
         overlaps = self.overlaps
-        if overlaps.isFalse:
+        if not overlaps.hasCollision:
             _logger.debug(f"No collision {overlaps=}")
             self.update_all_leds('OK')
         else:
@@ -595,7 +595,7 @@ def check_collision_dialog(plan, beam_set):
     except Warning as e:
         _logger.warning("{}".format(e), exc_info=True)
 
-    status = {'status': results['Overlaps'].isFalse,
+    status = {'status': results['Overlaps'].hasCollision,
               'UpdateComment': (bool(results['UpdateComment'])
                                 if 'UpdateComment' in results else True),
               'overlaps': results['Overlaps']}
@@ -617,6 +617,6 @@ if __name__ == '__main__':
 
     status = check_collision_dialog(plan, beam_set)
     if status['UpdateComment']:
-        status = status['status']
-        _logger.info(f"Updating validation status for plan to {status}.")
-        set_validation_comment(plan, beam_set, __COMMENT_HEADING__, status)
+        passes = not status['status']
+        _logger.info(f"Updating validation status for plan to {passes=}.")
+        set_validation_comment(plan, beam_set, __COMMENT_HEADING__, passes)
