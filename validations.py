@@ -1,9 +1,10 @@
-from .external import (Show_OK, Show_YesNo, MB_Icon, MB_Result,
+from .external import (Show_OK, Show_YesNo, MB_Icon, MB_Result, get_current,
                        CompositeAction, Show_Warning, obj_name)
 from .case_comment_data import (set_validation_comment,
-                                beamset_validation_checkraise)
+                                beamset_validation_check)
 from .collision_rois import check_collision
 from .collision_dialog import check_collision_dialog
+from .couchtop import CouchTopCollection
 import logging
 import sys
 import inspect
@@ -13,31 +14,48 @@ _logger = logging.getLogger(__name__)
 
 JAW_LIMIT = 0.5
 
-JAW_VALIDATION_STR = 'Jaw'
-COLLISION_VALIDATION_STR = 'Collision'
+JAW_KEY = 'Jaw'
+COLLISION_KEY = 'Collision'
+COUCH_KEY = 'Couchtop'
 
 
 class ValidationResult:
-    violation = False
+    _passes = None
+    violation = None
     message = ""
+    key = ""
     fixed = False
+    update_comment = True
 
-    def __init__(self, violation, message=None):
-        self.violation = bool(violation)
+    def __init__(self, passes=None, violation=None, message=None, key='Unk',
+                 update_comment=True):
+        self._passes = passes
+        self.violation = violation
+        self.key = key
+        self.update_comment = update_comment
+        self.message = str(message if message is not None else violation)
 
-        if message is not None:
-            self.message = str(message)
-        else:
-            self.message = str(violation)
+    @property
+    def passes(self):
+        return bool(self._passes if self._passes is not None
+                    else not self.violation)
 
     def __bool__(self):
-        return not self.violation
+        return bool(self.passes)
 
     def __str__(self):
         if self.fixed:
             return f'{self.message} (Corrected)'
         else:
             return self.message
+
+    def __repr__(self):
+        return (f'{self.__class__.__name__}('
+                f'passes={self._passes}, '
+                f'violation="{self.violation}", '
+                f'message="{self.message}", '
+                f'key={self.key}, '
+                f'update_comment={self.update_comment})')
 
 
 class SegmentViolation:
@@ -163,9 +181,8 @@ def fix_jaw(beam_set):
 
 
 def validate_jaw(plan, beam_set, silent=False, fix_errors=False):
-    beamset_validation_checkraise(beam_set)
     errorlist = check_jaw(beam_set)
-    validation = ValidationResult(errorlist)
+    validation = ValidationResult(violation=errorlist, key=JAW_KEY)
     if not silent:
         if validation:
             Show_OK("No collisions.", "Jaw collision status", ontop=True)
@@ -184,7 +201,7 @@ def validate_jaw(plan, beam_set, silent=False, fix_errors=False):
                 fix_errors = response == MB_Result.Yes
 
     if validation:
-        set_validation_comment(plan, beam_set, JAW_VALIDATION_STR)
+        pass
     elif fix_errors:
         errorlist.fix_violations()
         validation.fixed = True
@@ -193,23 +210,15 @@ def validate_jaw(plan, beam_set, silent=False, fix_errors=False):
         # likely shouldn't save without user review.  At least we should
         # indicate that the violation has been repaired.
 
-        # set_validation_comment(plan, beam_set, JAW_VALIDATION_STR)
+        validation.update_comment = False
     else:
         _logger.debug("Didn't fix, so remove Jaw passing if it is here.")
-        set_validation_comment(plan, beam_set, JAW_VALIDATION_STR, False)
 
     return validation
 
 
 def validate_collision(plan, beam_set, silent=False):
-    try:
-        beamset_validation_checkraise(beam_set)
-        can_update_comment = True
-    except UserWarning as warn:
-        if silent:
-            raise warn
-        else:
-            can_update_comment = False
+    can_update_comment = beamset_validation_check(beam_set)
 
     if silent:
         coll_result = check_collision(plan, beam_set, silent=True,
@@ -217,14 +226,44 @@ def validate_collision(plan, beam_set, silent=False):
     else:
         coll_result = check_collision_dialog(plan, beam_set)
 
-    if coll_result['UpdateComment'] and can_update_comment:
-        status = coll_result['status']
-        _logger.info(f"Updating validation status for plan to {status}.")
-        set_validation_comment(plan, beam_set,
-                               COLLISION_VALIDATION_STR, status)
+    update_comment = can_update_comment and coll_result['UpdateComment']
 
-    return ValidationResult(not coll_result['status'],
-                            message=coll_result['overlaps'])
+    return ValidationResult(passes=not coll_result['status'],
+                            violation=coll_result,
+                            message=coll_result['overlaps'],
+                            key=COLLISION_KEY,
+                            update_comment=update_comment)
+
+
+def validate_couch(plan, beam_set, silent=False, icase=None):
+    key = COUCH_KEY
+    cp = beam_set.PatientSetup.CollisionProperties
+    structure_set = cp.ForExaminationStructureSet
+    machine = beam_set.MachineReference.MachineName
+
+    icase = icase if icase is not None else get_current('Case')
+
+    try:
+        tops = CouchTopCollection(structure_set=structure_set,
+                                  use_known=True)
+        expected_top = tops.determine_top(machine=machine, icase=icase)
+
+        built_tops = tops.built_tops
+
+        if not expected_top.isBuilt:
+            violation = (f'Expected top {expected_top.Name} is not present.\n'
+                         f'Status:\n'
+                         f'\tRois present: {expected_top.isPresent}\n'
+                         f'\tRois built: {expected_top.isBuilt}')
+        elif len(built_tops) != 1:
+            violation = f'Too many tops in plan.  Found {len(built_tops)}:\n'
+            violation += '\n'.join([f'{top.Name}' for top in built_tops])
+        else:
+            violation = None
+    except Exception as e:
+        violation = f'Had exception in couch identification:\n{e}'
+
+    return ValidationResult(violation=violation, key=key)
 
 
 def run_all_validations(plan, beam_set=None, silent=False, show_on_fail=True):
@@ -240,22 +279,43 @@ def run_all_validations(plan, beam_set=None, silent=False, show_on_fail=True):
         beam_sets = [bs for bs in plan.BeamSets]
 
     fails = []
+    not_updatable = defaultdict(list)
     try:
         for name, validation_fn in validations.items():
             _logger.info(f'Running {name}.')
-            for beam_set_loop in beam_sets:
-                status = validation_fn(plan, beam_set_loop, silent)
+            for bs_iter in beam_sets:
+                status = validation_fn(plan, bs_iter, silent)
                 if not status:
                     fails.append(status)
 
+                _logger.info(f'Updating validation status of {status.key}'
+                             f' for plan [{obj_name(plan)}] to {status}.')
+                set_validation_comment(plan, bs_iter, status.key, bool(status))
+                if not beamset_validation_check(bs_iter):
+                    _logger.info(f'beamset {obj_name(bs_iter)} is not saved,'
+                                 f' cannot update comment key.')
+                    ident = f'{obj_name(plan)} -- {obj_name(bs_iter)}'
+                    not_updatable[ident].append(status)
+
     except UserWarning as warn:
-        _logger.warning(f"Failed to check {beam_set_loop} in {plan}",
+        _logger.warning(f"Failed to check {bs_iter} in {plan}",
                         exc_info=True)
         Show_Warning(f"{warn}", "Can't Validate beamset.")
 
-    if silent and show_on_fail and fails:
+    if silent and show_on_fail:
         # Silent, but still show message box on failure.
-        message = (f'Failed to validate plan "{obj_name(plan)}".\n'
-                   'Encountered the following failures:\n\n')
-        message += '\n'.join([f'{f!s}' for f in fails])
-        Show_Warning(caption="Failed Validation", message=message)
+        if fails:
+            _logger.debug(f"{fails=}")
+            message = (f'Failed to validate plan "{obj_name(plan)}".\n'
+                       'Encountered the following failures:\n\n')
+            message += '\n'.join([f'{f!s}' for f in fails])
+            Show_Warning(caption="Failed Validation", message=message)
+
+        if not_updatable:
+            message = 'Could not set comment on the following beamsets:\n\n'
+            message += '\n'.join([(f' {ident} -- ' +
+                                   ', '.join([f'{status.key}' for status
+                                              in statuses if status]))
+                                  for ident, statuses
+                                  in not_updatable.items()])
+            Show_Warning(caption="Failed update", message=message)
