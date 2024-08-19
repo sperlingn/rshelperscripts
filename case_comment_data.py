@@ -20,12 +20,16 @@ def filter_lines(lines, re=UID_RE):
 
 
 def beamset_validation_checkraise(beam_set):
-    if not beam_set.ModificationInfo or not beam_set.ModificationInfo.DicomUID:
+    if not beamset_validation_check(beam_set):
         raise UserWarning("Can't set comment, beamset is not yet saved.")
 
 
+def beamset_validation_check(beam_set):
+    return (beam_set.ModificationInfo and beam_set.ModificationInfo.DicomUID)
+
+
 def set_validation_comment(plan, beam_set, validation_type, status=True):
-    beamset_validation_checkraise(beam_set)
+    # beamset_validation_checkraise(beam_set)
 
     try:
         existing = plan.Comments.split('\n')
@@ -49,16 +53,17 @@ def set_validation_comment(plan, beam_set, validation_type, status=True):
     for uid in set(validated_uids) - plan_uids:
         del validated_uids[uid]
 
-    this_uid = beam_set.ModificationInfo.DicomUID
+    if beamset_validation_check(beam_set):
+        this_uid = beam_set.ModificationInfo.DicomUID
 
-    if status:
-        try:
-            validated_uids[this_uid].add(validation_type)
-        except (AttributeError, ValueError, TypeError, KeyError):
-            validated_uids[this_uid] = {validation_type}
-    elif (this_uid in validated_uids and
-          validation_type in validated_uids[this_uid]):
-        validated_uids[this_uid].discard(validation_type)
+        if status:
+            try:
+                validated_uids[this_uid].add(validation_type)
+            except (AttributeError, ValueError, TypeError, KeyError):
+                validated_uids[this_uid] = {validation_type}
+        elif (this_uid in validated_uids and
+              validation_type in validated_uids[this_uid]):
+            validated_uids[this_uid].discard(validation_type)
 
     lines = [line.strip() for line in str_lines if line.strip()]
 
