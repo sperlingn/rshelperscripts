@@ -239,7 +239,7 @@ def guess_machine(icase):
     return machine
 
 
-def test_for_hn(icase, series, prompt=True):
+def test_for_hn(icase=None, prompt=True):
     """
     Test the case for if it is likely to have a H&N board used.
     Simple tests first (e.g. if the case is a pelvis, return False) followed by
@@ -248,9 +248,9 @@ def test_for_hn(icase, series, prompt=True):
     """
     # TODO: Also test for patient orientation.  If FFS, assume it isn't H&N.
 
-    if icase.BodySite in HN_SITES:
+    if icase and icase.BodySite in HN_SITES:
         return True
-    elif icase.BodySite in NON_HN_SITES:
+    elif icase and icase.BodySite in NON_HN_SITES:
         return False
     elif prompt:
         # More complicated, need to test if there is a HN board.
@@ -349,7 +349,6 @@ class CouchTop(object):
 
     roi_geometries = None
     template = None
-    isValid = False
     _desc_re = re_compile(r'(?:Offset:\s(?P<Offset>\d+)'
                           r'|Tx Machines:\s(?P<TxMachines>.*)$'
                           r'|Surface:\s"(?P<Surface>[^"]+)")')
@@ -380,16 +379,28 @@ class CouchTop(object):
                       if k in self._updateable}
             self.update_params(**params)
 
-            self.isValid = self.surface_roi in self.ROI_Names
-
             if structure_set:
-                self.update()
+                self.update(structure_set=structure_set)
 
             _logger.debug(f"Built couch {Name}: {self!s}")
 
         except SystemError:
             # No template in patient_db by this name.
             raise Warning(f"Could not find {self.Name} in patient_db.")
+
+    @property
+    def isValid(self):
+        return self.surface_roi in self.ROI_Names
+
+    @property
+    def isPresent(self):
+        return self.isValid and self.ROI_Names == self.roi_geometries.keys()
+
+    @property
+    def isBuilt(self):
+        return self.isPresent and all([geometry.PrimaryShape is not None
+                                       for geometry
+                                       in self.roi_geometries.values()])
 
     def update_params(self, **kwargs):
         # Filter against those parameters that we have deemed safe to update.
@@ -935,7 +946,8 @@ class CouchTopCollection(object):
     _keys = None
 
     def __init__(self, tops=None, use_known=True,
-                 patient_db=get_current("PatientDB")):
+                 patient_db=get_current("PatientDB"),
+                 structure_set=None):
         self._DB_Tops = {tmpl['Name']: tmpl for tmpl
                          in patient_db.GetPatientModelTemplateInfo()}
 
@@ -949,7 +961,7 @@ class CouchTopCollection(object):
             _logger.debug(f"Building from DB Tops: {self._DB_Tops}")
             self.Tops = {k: CouchTop(k) for k in self._DB_Tops}
 
-        self.update()
+        self.update(patient_db=patient_db, structure_set=structure_set)
 
         _logger.debug(f"Built tops. {self.HN_Tops=}; {self.Normal_Tops=}")
 
@@ -971,6 +983,18 @@ class CouchTopCollection(object):
 
     def __len__(self):
         return len(self.Tops)
+
+    @property
+    def valid_tops(self):
+        return [top for top in self if top.isValid]
+
+    @property
+    def present_tops(self):
+        return [top for top in self if top.isPresent]
+
+    @property
+    def built_tops(self):
+        return [top for top in self if top.isBuilt]
 
     # TODO: Implement later
     def Add(self, newitem):
@@ -1028,36 +1052,39 @@ class CouchTopCollection(object):
             if self.Tops[top].machine_matches(machine):
                 return self.Tops[top]
 
+    def determine_top(self, icase=None, plan=None, machine=None, isHN=None):
+
+        if machine is None:
+            try:
+                if plan is None and len(icase.TreatmentPlans) > 0:
+                    _logger.warning("No plan selected, trying first plan.")
+                    plan = pick_plan()
+                machine = plan.BeamSets[0].MachineReference.MachineName
+                _logger.debug(f"Found machine {machine = }")
+            except (ArgumentOutOfRangeException, IndexError,
+                    AttributeError, Warning):
+                _logger.info("Couldn't determine machine. "
+                             "Guessing based on the current case.")
+                machine = guess_machine(icase)
+
+        isHN = isHN if isHN is not None else test_for_hn(icase)
+
+        if machine is None:
+            top = pick_list(self, 'Select table to use:')
+        else:
+            top = self.get_first_top(machine=machine, isHN=isHN)
+
+        if top is None:
+            raise Warning(f"No self found to match machine: {machine}.")
+
+        return top
+
     def __str__(self):
         return '{}: [{}]'.format(self.__class__.__name__,
                                  ', '.join(map(str, self.Tops)))
 
     def __repr__(self):
         return str(self)
-
-
-def determine_top(icase, plan, tops, isHN):
-    machine = None
-    try:
-        if plan is None and len(icase.TreatmentPlans) > 0:
-            _logger.warning("No plan selected, trying first plan.")
-            plan = pick_plan()
-        machine = plan.BeamSets[0].MachineReference.MachineName
-        _logger.debug(f"Found machine {machine = }")
-    except (ArgumentOutOfRangeException, IndexError, AttributeError, Warning):
-        _logger.info("Couldn't determine machine. "
-                     "Guessing based on the current case.")
-        machine = guess_machine(icase)
-
-    if machine is None:
-        top = pick_list(tops, 'Select table to use:')
-    else:
-        top = tops.get_first_top(machine=machine, isHN=isHN)
-
-    if top is None:
-        raise Warning(f"No tops found to match machine: {machine}.")
-
-    return top
 
 
 def addcouchtoexam(icase, examination=None, plan=None,
@@ -1093,9 +1120,7 @@ def addcouchtoexam(icase, examination=None, plan=None,
     else:
         top_height = get_or_find_table_height(series, icase=icase)
 
-    isHN = test_for_hn(icase, series)
-
-    top = determine_top(icase, plan, tops, isHN)
+    top = tops.determine_top(icase, plan)
 
     with CompositeAction(f"Add {top.Name} to case"):
         top.add_to_case(icase, examination, top_height, **kwargs)
