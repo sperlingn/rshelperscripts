@@ -4,6 +4,8 @@ from copy import deepcopy
 import logging as _logging
 from uuid import uuid4
 from dataclasses import dataclass
+from collections.abc import MutableMapping
+from typing import Type
 _logger = _logging.getLogger(__name__)
 
 
@@ -1493,6 +1495,84 @@ def params_from_mapping(obj, param_map, default_map=None):
 
     params.update(map_p)
     return params
+
+
+class LimitedDict(MutableMapping):
+    """A dictionary that limits the keys returned for iteration to those
+    present in the _keylist attribute.  If the dictionary is initialized with
+    key: value pairs, those _keylist is initialized to those keys."""
+    _keylist: Type[set] = None
+    store: Type[dict]
+
+    def __init__(self, *args, **kwargs):
+        if len(args) == 1 and args[0] is None:
+            self.store = dict(**kwargs)
+        else:
+            self.store = dict(*args, **kwargs)
+
+        if self.store:
+            self._keylist = set(self.store)
+
+    def keys(self):
+        keylist = self.store.keys()
+        return keylist & self._keylist if self._keylist else keylist
+
+    @property
+    def limiter(self):
+        return set(self._keylist) if self._keylist else None
+
+    @limiter.setter
+    def limiter(self, limiter):
+        self._keylist = set(limiter)
+
+    def __getitem__(self, key):
+        return self.store[key]
+
+    def __setitem__(self, key, value):
+        self.store[key] = value
+
+    def __delitem__(self, key):
+        del self.store[key]
+
+    def __iter__(self):
+        return iter(self.keys())
+
+    def __len__(self):
+        return len(self.store)
+
+    @property
+    def __class__(self):
+        return dict
+
+    def update(self, *args, **kwargs):
+        if len(args) == 1 and args[0] is None:
+            return
+        super().update(*args, **kwargs)
+
+
+def clamp(lower, val, upper):
+    return val if lower <= val <= upper else upper if val > upper else lower
+
+
+def sequential_dedup_return_list(func):
+    """Decorator function to remove sequentially duplicate items in a list
+    that was returned from the passed function """
+
+    def f_out(*args, **kwargs):
+        inlist = func(*args, **kwargs)
+        outlist = []
+        try:
+            last = None
+            for item in inlist:
+                if item != last:
+                    outlist.append(item)
+                last = item
+
+            return outlist
+        except (TypeError, IndexError, ValueError):
+            return inlist
+
+    return f_out
 
 
 # __all__ = [dcmread, CompositeAction, get_current]
