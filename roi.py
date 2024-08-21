@@ -1,4 +1,4 @@
-from .external import get_current
+from .external import get_current, LimitedDict
 from .points import point
 import logging
 _logger = logging.getLogger(__name__)
@@ -12,8 +12,8 @@ _ROI_OPTS = {'Name': 'Generated',
              'RoiMaterial': None}
 
 
-def margin_settings(margin):
-    return {'Type': 'Expand',
+def margin_settings(margin, direction='Expand'):
+    return {'Type': direction,
             'Superior': margin, 'Inferior': margin,
             'Anterior': margin, 'Posterior': margin,
             'Right': margin, 'Left': margin}
@@ -26,10 +26,14 @@ class ROI_Builder():
     strucsets = None
 
     def __init__(self, patient_model=None, structure_set=None, beam_set=None,
-                 default_opts=None):
+                 default_opts=None, **kwargs):
 
         if beam_set:
-            self.pm = beam_set.PatientSetup.CollisionProperties.ForPatientModel
+            coll_prop = beam_set.PatientSetup.CollisionProperties
+            self.pm = coll_prop.ForPatientModel
+
+            if not structure_set:
+                structure_set = coll_prop.ForExaminationStructureSet
 
         if patient_model:
             self.pm = patient_model
@@ -42,19 +46,17 @@ class ROI_Builder():
         else:
             self.structsets = [s for s in self.pm.StructureSets]
 
-        self.default_opts = {**_ROI_OPTS}
-        if default_opts:
-            self.default_opts.update(default_opts)
+        self.default_opts = LimitedDict(_ROI_OPTS)
+        self.default_opts.update(default_opts)
+        self.default_opts.update(kwargs)
 
     def CreateROI(self, name=None, opts=None, **opts_ovr):
-        create_opts = {**self.default_opts}
+        create_opts = LimitedDict(self.default_opts)
 
         name = name if name else create_opts['Name']
 
-        if opts:
-            create_opts.update(opts)
-        if opts_ovr:
-            create_opts.update(opts_ovr)
+        create_opts.update(opts)
+        create_opts.update(opts_ovr)
 
         create_opts['Name'] = self.pm.GetUniqueRoiName(DesiredName=name)
 
@@ -70,12 +72,15 @@ class ROI_Builder():
             geometries = {ss.OnExamination: ss.RoiGeometries[roi.Name]
                           for ss in self.structsets}
 
-            opts = {**opts}
+            opts = LimitedDict(opts)
             opts.update(opts_ovr)
 
+            opts.limiter = {attr for attr in dir(roi) if
+                            not attr.startswith('_') and not callable(attr)}
+
             for attr_in in opts:
-                if hasattr(roi, attr_in):
-                    setattr(roi, attr_in, opts[attr_in])
+                setattr(roi, attr_in, opts[attr_in])
+
             return ROI(roi, geometries)
         else:
             return self.CreateROI(name, opts, **opts_ovr)
@@ -106,15 +111,13 @@ class ROI():
             self._geometries[get_current('Examination')] = None
 
     def create_box(self, size=1, center=0, exam=None, **kwargs):
-        params = {'Size': point(size),
-                  'Center': point(center),
-                  'Examination': None,
-                  'Representation': 'TriangleMesh',
-                  'VoxelSize': None}
+        params = LimitedDict({'Size': point(size),
+                              'Center': point(center),
+                              'Examination': None,
+                              'Representation': 'TriangleMesh',
+                              'VoxelSize': None})
 
-        for key in params:
-            if key in kwargs:
-                params[key] = kwargs[key]
+        params.update(kwargs)
 
         if exam and exam in [exam.Name for exam in self._geometries]:
             exams = [lexam for lexam in self._geometries if lexam.Name == exam]
@@ -206,6 +209,10 @@ class ROI():
     @property
     def Name(self):
         return self._roi.Name
+
+    @Name.setter
+    def Name(self, Name):
+        self._roi.Name = Name
 
     def DeleteRoi(self):
         del self._geometries
