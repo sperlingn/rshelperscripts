@@ -1,10 +1,12 @@
 import logging
 from .clinicalgoals import copy_clinical_goals
-from .external import (CompositeAction as _CompositeAction, ObjectDict,
-                       params_from_mapping, get_machine,
-                       rs_getattr, rs_hasattr, obj_name,
+from .external import (CompositeAction as CompositeAction, ObjectDict,
+                       params_from_mapping, get_machine, obj_name, clamp,
+                       rs_getattr, rs_hasattr, sequential_dedup_return_list,
                        dup_object_param_values, CallLaterList, get_unique_name)
 from .examinations import duplicate_exam as _duplicate_exam
+from .roi import ROI_Builder
+from difflib import get_close_matches
 # from .points import point as _point
 
 _logger = logging.getLogger(__name__)
@@ -381,7 +383,7 @@ def copy_plan_to_exam(icase, plan_in, exam_out, exclude_segments=False,
 
     plan_params['PlanName'] = plan_out_name
 
-    with _CompositeAction("Create duplicate plan {plan_out_name}"):
+    with CompositeAction(f"Create duplicate plan {plan_out_name}"):
         # First create an empty plan on the new exam.
         _logger.debug(f"Add new plan with {plan_params=}")
         plan_out = icase.AddNewPlan(**plan_params)
@@ -519,8 +521,6 @@ def copy_beams(plan_in, beamset_in, plan_out, beamset_out, # noqa: C901
     else:
         raise NotImplementedError("Only photons supported at this time.")
 
-    pm_out = beamset_out.PatientSetup.CollisionProperties.ForPatientModel
-
     existing_iso_set = {beam.Isocenter.Annotation.Name
                         for beamset in plan_in.BeamSets
                         for beam in beamset.Beams}
@@ -536,13 +536,12 @@ def copy_beams(plan_in, beamset_in, plan_out, beamset_out, # noqa: C901
 
     _logger.debug(f"{energy_map=}")
 
+    tgt_map = {}
     try:
-        tgt = [s.Name for s in pm_out.RegionsOfInterest
-               if (rs_hasattr(s, 'OrganData.OrganType')
-                   and (rs_getattr(s, 'OrganData.OrganType') ==
-                        'Target'))][0]
+        tgt_builder = ROI_Builder(beam_set=beamset_out, Type='Ptv')
+
     except IndexError:
-        tgt = None
+        tgt_builder = None
         _logger.warning("No target ROIs, we will be unable to create "
                         "segments for arc beams")
 
@@ -588,17 +587,43 @@ def copy_beams(plan_in, beamset_in, plan_out, beamset_out, # noqa: C901
                                              _ARC_BEAM_OPT_PARAM_MAPPING)
 
             # TODO: Arc params saying "No changes to save" breaks this
-            # acp_out.EditArcBasedBeamOptimizationSettings(**arc_params)
+            # Right now, instead of using exception handling, check each item
+            # try:
+            #     acp_out.EditArcBasedBeamOptimizationSettings(**arc_params)
+            # except InvalidOperationException:
+            #     _logger.error('Reached error in setting arc_params.\n'
+            #                   f'Beam: {obj_name(beam_in)}\n'
+            #                   f'{acp_in=}\n{acp_out=}\n{arc_params=}',
+            #                   exc_info=True)
+
+            n_arc_params = params_from_mapping(acp_in,
+                                               _ARC_BEAM_OPT_PARAM_MAPPING)
+            if arc_params != n_arc_params:
+                _logger.debug(f"Updating arc params for beam"
+                              f" '{obj_name(beam_out)}'"
+                              f" from {n_arc_params} to {arc_params}")
+                acp_out.EditArcBasedBeamOptimizationSettings(**arc_params)
+            else:
+                _logger.debug(f"Arc params for beam '{obj_name(beam_out)}'"
+                              " unchanged, not updating.")
 
         if not exclude_segments and len(beam_in.Segments) > 0:
             MU_out = beam_in.BeamMU if beam_in.BeamMU > 0 else 999
             # Copy segments for beam
-            if 'Arc' in beam_in.DeliveryTechnique:
+            if 'Arc' in beam_in.DeliveryTechnique and tgt_builder:
                 # Arcs need to have the segments built
+
+                # Make a small target box at isocenter
+                if iso_name not in tgt_map:
+                    roi = tgt_builder.CreateROI(f'{iso_name}_Box')
+                    roi.create_box(center=params['IsocenterData']['Position'])
+
+                    tgt_map[iso_name] = roi
+
+                tgt = tgt_map[iso_name].Name
 
                 beam_out.SetTreatOrProtectRoi(RoiName=tgt)
                 beamset_out.GenerateConformalArcSegments(Beams=[beam_out.Name])
-                # Ensure enough MU so segments are computable
                 copy_arc_segments(beam_in, beam_out)
                 beam_out.RemoveTreatOrProtectRoi(RoiName=tgt)
             elif 'SMLC' in beam_in.DeliveryTechnique:
@@ -635,6 +660,10 @@ def copy_beams(plan_in, beamset_in, plan_out, beamset_out, # noqa: C901
                     f"supported for copying segments on beam '{beam_in.Name}'."
                     "  Segments will not be copied.")
             beam_out.BeamMU = MU_out
+
+    for tgt in tgt_map:
+        tgt_map[tgt].DeleteRoi()
+
     return None
 
 
@@ -662,15 +691,15 @@ def copy_plan_optimizations(plan_in, plan_out):
         raise ValueError("Different number of optimization sets. "
                          "Cannot continue.")
 
-    with _CompositeAction("Copy Optimizations from "
-                          f"{plan_in.Name} to {plan_out.Name}"):
+    with CompositeAction("Copy Optimizations from "
+                         f"{plan_in.Name} to {plan_out.Name}"):
         for opt_in, opt_out in zip(plan_in.PlanOptimizations,
                                    plan_out.PlanOptimizations):
             copy_optimizations(opt_in, opt_out)
 
 
 def copy_optimizations(opt_in, opt_out):
-    with _CompositeAction(f"Copy Optimizations from {opt_in} to {opt_out}"):
+    with CompositeAction(f"Copy Optimizations from {opt_in} to {opt_out}"):
         copy_opt_functions(opt_in, opt_out)
 
         copy_opt_parameters(opt_in.OptimizationParameters,
@@ -831,3 +860,105 @@ def beamset_conformity_indices(beamset, roi=None, dose=None):
     external = obj_name(beamset.GetStructureSet().OutlineRoiGeometry.OfRoi)
 
     return calc_conformity_indices(fd, external, tgt, rx)
+
+
+@sequential_dedup_return_list
+def block_from_leaves(beam):
+    lp = beam.Segments[0].LeafPositions
+    lcp = beam.UpperLayer.LeafCenterPositions
+    jx1, jx2, jy1, jy2 = beam.Segments[0].JawPositions
+
+    return [{'x': clamp(jx1, xpos, jx2), 'y': clamp(jy1, ypos, jy2)}
+            for n, bank in enumerate(lp)
+            for xpos, ypos in zip(bank[::n*2-1], lcp[::n*2-1])]
+
+
+def banks_for_heart(beam, pm=None):
+    # You can dictate the logic to get only the bank that matters, but for now
+    # this will return both left and right.
+    return [0, 1]
+
+    # TODO: For proper checking, should check patient model for orientation,
+    # laterality of target, etc.
+    if 270 < beam.GantryAngle < 360:
+        return [0]
+    elif 0 < beam.GantryAngle < 90:
+        return [1]
+
+
+def calc_max_heart_distance(bs, heart_name="Heart"):
+
+    pm = bs.PatientSetup.CollisionProperties.ForPatientModel
+    roi_names = pm.RegionsOfInterest.Keys
+    heart_roi = get_close_matches(heart_name, roi_names, 1, cutoff=0)[0]
+
+    mhds = {}
+
+    if hasattr(CompositeAction, 'isactive') and CompositeAction.isactive:
+        raise UserWarning(f'Function {__name__} performs actions which break '
+                          'active CompositeAction(s).  '
+                          'Do not use from within a CompositeAction')
+
+    try:
+        with CompositeAction("Check MHD (will roll back changes)"):
+            # Start a composite action which we will cancel out of by raising
+            # an exception
+
+            # Unset all blocking ROIs, just in case.
+            for roi in roi_names:
+                bs.ClearROIFromTreatOrProtectUsageForAllBeams(RoiName=roi)
+
+            # Store the pre split list of beam names in case bs.Beams changes
+            # (depends on if iter(Beams) is a view on beams, or a fixed list at
+            # execution time, unknown implementation feature so play it safe)
+            beams_pre_split = bs.Beams.Keys
+
+            for beam_name in beams_pre_split:
+                beam = bs.Beams[beam_name]
+                banks = banks_for_heart(beam)
+
+                # Should be able to clear any blocks using this, but it
+                # BeamCreationRules doesn't exist under the beam_set in
+                # scripting...
+
+                # bcr = bs.BeamCreationRules
+                # bmshapes = bcr.BeamModifierCreationRules[beam.Name]
+                # for bmsp in bmshapes.BeamModifierShapeProperties:
+                #     bmsp.DeleteVirtualBlock()
+
+                contour = block_from_leaves(beam)
+                bs.AddVirtualBlock(Beam=beam.Name,
+                                   Contour=contour,
+                                   Type='Treat')
+
+                if len(beam.Segments) != 1:
+                    bs.SplitBeamSegmentsIntoBeams(BeamName=beam_name)
+
+                beam.ConformMlc()
+
+                ilp = beam.Segments[0].LeafPositions
+
+                # Block the heart
+                beam.SetTreatOrProtectRoi(RoiName=heart_roi)
+                beam.ConformMlc()
+
+                hlp = beam.Segments[0].LeafPositions
+
+                # The DICOM leaf coordinate system is absolute in RS, so if the
+                # left bank closed (bank 0) when we blocked, then the hlp will
+                # be greater than the ilp for those leaves, conversely for the
+                # right bank (bank 1) the ilp would be greater than the hlp.
+                #
+                # Might need some logic to check that the leaves outside of the
+                # jaws didn't move and contirbute to this.  Leaf positions
+                # available in beam.UpperLayer
+                maxdiff = (max(hlp[0]-ilp[0]), max(ilp[1]-hlp[1]))
+
+                mhds[beam.Name] = tuple(maxdiff[i] for i in banks)
+
+            raise Warning("Just to bail on the composite action...")
+
+    except Warning:
+        pass
+
+    return mhds
