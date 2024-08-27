@@ -80,7 +80,7 @@ INDICES_DICT = {
     }
 }
 
-INDEX_DIR_SMALLER_BETTER = {'RTOGCI': True,
+INDEX_DIR_SMALLER_BETTER = {'RTOGCI': None,
                             'PCI': False,
                             'GI': True,
                             'HI': True}
@@ -88,6 +88,10 @@ INDEX_DIR_SMALLER_BETTER = {'RTOGCI': True,
 BODYSITE_MAPPING = {'Brain': 'Brain',
                     'Head & Neck': 'Brain',
                     'Thorax': 'Lung'}
+
+DIR_TEXT_MAP = {True: 'smaller',
+                False: 'larger',
+                None: 'closer to unity'}
 
 
 class BorderedTextBoxBlack(Border):
@@ -130,7 +134,7 @@ class GoalBorderedText(BorderedTextBoxBlack):
 
 class IndexHeader(BorderedTextBoxBlack):
     def build_text(self, index_name):
-        size_dir = ["smaller", "larger"][INDEX_DIR_SMALLER_BETTER[index_name]]
+        size_dir = DIR_TEXT_MAP[INDEX_DIR_SMALLER_BETTER[index_name]]
         textlines = [
             Run(f'{index_name}'),
             LineBreak(),
