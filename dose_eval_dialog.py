@@ -1020,7 +1020,7 @@ class ConformityIndicesWindow(RayWindow):
 
             self.DosesGrid.Children.Add(self.PVText)
 
-            indices = site_idx.index_names & self.roi_data.keys()
+            indices = sorted(site_idx.index_names & self.roi_data.keys())
 
             roi_vol = self.roi_data['ROIvol']
 
