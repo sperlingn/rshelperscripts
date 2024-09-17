@@ -11,7 +11,7 @@ _logger = _logging.getLogger(__name__)
 
 __opts = {'DUP_MAX_RECURSE': 10}
 
-_NAMELIST = ['Name', 'DicomPlanLabel']
+_NAMELIST = ['Name', 'DicomPlanLabel', 'SegmentNumber']
 
 
 def helperoverride(function):
@@ -21,15 +21,18 @@ def helperoverride(function):
 
 try:
     from System.Windows import (MessageBox as _MessageBox, WindowStyle,
-                                SizeToContent, Window, Visibility,
+                                SizeToContent, Window, Visibility, Rect,
                                 DragDrop, DragDropEffects, DragDropKeyStates)
     from System.Windows.Controls import (Button, TextBlock, DockPanel, Label,
-                                         ListBoxItem)
+                                         ListBoxItem, TextBox, Image, ToolTip)
     from System.Windows.Shapes import Rectangle
-    from System.Windows.Media import VisualBrush, Brushes
+    from System.Windows.Media import (VisualBrush, Brushes, VisualTreeHelper,
+                                      PixelFormats, DrawingVisual)
+    from System.Windows.Media.Imaging import RenderTargetBitmap
+    from System import Double as SystemDouble, Array as SystemArray, DateTime
     from System import ArgumentOutOfRangeException, InvalidOperationException
     from System.IO import InvalidDataException
-    from System.Windows.Input import Keyboard, ModifierKeys
+    from System.Windows.Input import Keyboard, ModifierKeys, MouseButtonState
     from System.Windows.Markup import XamlWriter, XamlReader
     from System.IO import StringReader
     from System.Xml import XmlReader
@@ -440,6 +443,22 @@ def set_module_opts(**kwargs):
         set_module_opt(opt, val)
 
 
+def StaticMWHandler_IncDecScroll(caller, event):
+        try:
+            scale = ValScale.get(Keyboard.Modifiers, 1)
+            valdelta = int(event.Delta * scale / 120.)
+
+            if hasattr(caller, "Value"):
+                caller.Value += valdelta
+            elif hasattr(caller, "Text"):
+                caller.Text = '%d' % (int(caller.Text) + valdelta)
+
+        except ValueError:
+            pass
+        except Exception as ex:
+            _logger.exception(ex)
+
+
 class ListItemPanel(DockPanel):
     _button = None
     _label = None
@@ -592,7 +611,319 @@ class ListSelectorDialog(RayWindow):
             self.Close()
 
 
-class BeamReorderDialog(RayWindow):
+class GenericReorderDialog(RayWindow):
+    _XAML = None
+
+    ItemListBox = None  # ListBox
+    BeamNumbers = None  # StackPanel
+    BtnOK = None  # Button (OK)
+    FirstBeamNo = None  # Text
+    _results = None  # dict for results
+    _list_in = None  # list of list_in
+    _dragstartpoint = None  # When dragging, screen coordinates of start
+
+    # C.f. https://stackoverflow.com/a/27975085
+    _dragdropwindow = None  # Preview window of object being drug
+
+    def __init__(self, list_in, results):
+        self.LoadComponent(self._XAML)
+
+        self.ItemListBox.Items.Clear()
+        self.ItemNumbers.Children.Clear()
+
+        self.ItemListBox.PreviewMouseMove += self.ReorderDlgPreviewMouseMove
+        self.ItemListBox.Drop += self.ItemListBox_Drop
+
+        self._list_in = {obj_name(obj): obj for obj in list_in}
+
+        self.AddItemsToListBox(self._list_in)
+
+        self.BtnOK.Click += self.OK_Click
+
+        self._results = results
+
+        _logger.debug(f"{results=}")
+
+    @staticmethod
+    def BuildLBI(item_name, item):
+        lbi = ListBoxItem()
+        lbi.Tag = f"{item}"
+        lbi.Content = f"{item_name}"
+        return lbi
+
+    @property
+    def lowest_n(self):
+        return 0
+
+    def AddItemsToListBox(self, itemdict):
+        lowest_n = self.lowest_n
+
+        for i, (item_name, item) in enumerate(itemdict.items()):
+
+            lbi = self.BuildLBI(item_name, item)
+
+            n_label = Label()
+            n_label.Content = f"{lowest_n + i}"
+
+            _logger.debug(f"{n_label=}")
+
+            self.ItemNumbers.Children.Add(n_label)
+
+            lbi.PreviewMouseLeftButtonDown += self.ReorderDlg_PrevMLBDown
+            lbi.Drop += self.ReorderDlg_Drop
+            lbi.DragOver += self.ReorderDlg_DragOver
+            lbi.DragLeave += self.ReorderDlg_DragLeave
+            lbi.QueryContinueDrag += self.ReorderDlg_QueryContinueDrag
+            lbi.GiveFeedback += self.ReorderDlg_GiveFeedback
+
+            _logger.debug(f"{lbi=}, {item_name=} {item=}")
+
+            self.ItemListBox.Items.Add(lbi)
+
+    def ReorderDlgPreviewMouseMove(self, caller, event):
+        if event.LeftButton == MouseButtonState.Pressed:
+            try:
+                _logger.debug(f"{caller=} {event=}")
+                _logger.debug(f"{event.LeftButton=}")
+                pos_in_screen = event.GetPosition(None)
+                ddx = pos_in_screen.X - self._dragstartpoint.X
+                ddy = pos_in_screen.Y - self._dragstartpoint.Y
+
+                source = event.OriginalSource
+                while (source is not None and
+                       not isinstance(source, ListBoxItem)):
+                    if hasattr(source, 'VisualParent'):
+                        source = source.VisualParent
+                    elif hasattr(source, 'Parent'):
+                        source = source.Parent
+
+                if source is None:
+                    _logger.debug(f"Bubbled from {event.OriginalSource=} and"
+                                  " got to None before ListBoxItem")
+                    return
+
+                moved_enough = False
+
+                if source != caller:
+                    moved_enough = True
+
+                moved_enough |= pow(pow(ddx, 2) + pow(ddy, 2), 0.5) >= 5
+
+                pos_from_source = event.GetPosition(source)
+                _logger.debug(f"X: {pos_from_source.X} Y:{pos_from_source.Y}"
+                              f"{source.ActualHeight=} {source.ActualWidth=}")
+
+                moved_enough |= (pos_from_source.X < 3 or
+                                 pos_from_source.X > source.ActualWidth - 3 or
+                                 pos_from_source.Y < 3 or
+                                 pos_from_source.Y > source.ActualHeight - 3)
+
+                if not moved_enough:
+                    _logger.debug(f"drag more. {ddx=} {ddy=}")
+                    return
+
+                src_index = self.ItemListBox.Items.IndexOf(source)
+
+                # _logger.debug(f"{source=} {src_index=}")
+
+                if source is None:
+                    return
+
+                self.BuildPreviewWindow(source)
+                source.Visibility = Visibility.Collapsed
+
+                DragDrop.DoDragDrop(source, src_index, DragDropEffects.Move)
+            except (AttributeError, ValueError) as e:
+                _logger.error(f"Couldn't start drag: {e}")
+
+    def BuildPreviewWindow(self, caller):
+        _logger.debug(f"{caller=}")
+        if self._dragdropwindow is not None:
+            try:
+                self._dragdropwindow.Close()
+            except Exception as e:
+                _logger.error(f"{e}")
+            finally:
+                self._dragdropwindow = None
+
+        ddw = Window()
+        self._dragdropwindow = ddw
+
+        ddw.WindowStyle = getattr(WindowStyle, 'None')
+        ddw.AllowTransparency = True
+        ddw.AllowDrop = False
+        ddw.Background = Brushes.White
+        ddw.IsHitTestVisible = False
+        ddw.SizeToContent = SizeToContent.WidthAndHeight
+        ddw.Topmost = True
+        ddw.ShowInTaskbar = False
+
+        #r = self.CloneUsingXAML(caller)
+        r = self.CloneUsingImage(caller)
+
+        ddw.Content = r
+
+        cursor_pos = GetCursorPos()
+
+        ddw.Left = cursor_pos[0] + 10
+        ddw.Top = cursor_pos[1] + 10
+        ddw.Show()
+        _logger.debug(f"{ddw=} {cursor_pos=}")
+
+    @staticmethod
+    def CloneUsingImage(uielement, dpi = 96, width = None, height = None):
+        bounds = VisualTreeHelper.GetDescendantBounds(uielement)
+        rtb_scale = dpi / 96.0
+        width = width if width else int((bounds.Width + bounds.X) * rtb_scale)
+        height = height if height else int((bounds.Height + bounds.X) * rtb_scale)
+        rtb_args = (int(width),
+                    int(height),
+                    dpi,
+                    dpi,
+                    PixelFormats.Pbgra32)
+        renderTargetBitmap = RenderTargetBitmap(*rtb_args)
+
+        dv = DrawingVisual()
+        ctx = dv.RenderOpen()
+        vb = VisualBrush(uielement)
+        rect = Rect(bounds.X, bounds.Y, width/rtb_scale, height/rtb_scale)
+        ctx.DrawRectangle(vb, None, rect)
+        ctx.Close()
+        renderTargetBitmap.Render(dv)
+
+        #renderTargetBitmap.Render(uielement)
+
+        img = Image()
+        img.Width = width / rtb_scale
+        img.Height = height / rtb_scale
+        img.Source = renderTargetBitmap
+        return img
+
+    @staticmethod
+    def CloneUsingXAML(uielement):
+        r = Rectangle()
+        r.Width = uielement.ActualWidth/2
+        r.Height = uielement.ActualHeight/2
+
+        clone = XamlReader.Load(XmlReader.Create(StringReader(
+            XamlWriter.Save(uielement))))
+
+        clone.IsSelected = False
+
+        r.Fill = VisualBrush(clone)
+
+        return r
+
+    def ItemListBox_Drop(self, caller, event):
+        src_index = event.Data.GetData(int)
+        dest_index = len(self.ItemListBox.Items)
+
+        _logger.debug(f"Dropped on List and not ListItem"
+                      f"{src_index=} {dest_index=}")
+
+        if src_index == dest_index or src_index < 0 or dest_index < 0:
+            _logger.debug("Dropped on self, no change")
+            return
+
+        if src_index < dest_index:
+            # Moving from above current position, we remove first so we
+            # will end up moving the destination up.
+            dest_index -= 1
+
+        src_control = self.ItemListBox.Items[src_index]
+        self.ItemListBox.Items.RemoveAt(src_index)
+        self.ItemListBox.Items.Insert(dest_index, src_control)
+
+    def ReorderDlg_DragOver(self, caller, event):
+        event.Effects = getattr(DragDropEffects, 'None')
+        src_index = event.Data.GetData(int)
+        if src_index != self.ItemListBox.Items.IndexOf(caller):
+            event.Effects = DragDropEffects.Move
+
+            drop_pos = event.GetPosition(caller)
+            # _logger.debug(f"{drop_pos.X=} {drop_pos.Y=} {caller.Height=}")
+
+            if drop_pos.Y < caller.Height/2:
+                # Top Half
+                res_name = "TopHalf"
+            else:
+                res_name = "BottomHalf"
+
+            caller.SetResourceReference(ListBoxItem.BackgroundProperty,
+                                        res_name)
+
+    def ReorderDlg_GiveFeedback(self, caller, event):
+        # _logger.debug(f"{caller=} {event=}")
+        cursor_pos = GetCursorPos()
+        self._dragdropwindow.Left = cursor_pos[0] + 10
+        self._dragdropwindow.Top = cursor_pos[1] + 10
+
+    def ReorderDlg_DragLeave(self, caller, event):
+        caller.ClearValue(ListBoxItem.BackgroundProperty)
+
+    def ReorderDlg_Drop(self, caller, event):
+        _logger.debug(f"{caller=} {event=}")
+
+        if isinstance(caller, ListBoxItem):
+            event.Handled = True  # Either way, this is the right destination
+            caller.ClearValue(ListBoxItem.BackgroundProperty)
+            src_index = event.Data.GetData(int)
+            dest_index = self.ItemListBox.Items.IndexOf(caller)
+
+            drop_pos = event.GetPosition(caller)
+
+            if drop_pos.Y < caller.Height/2:
+                # Top Half, insert "source" before "caller"
+                pass
+            else:
+                # Insert "source" after "caller"
+                dest_index += 1
+
+            _logger.debug(f"{drop_pos.X=} {drop_pos.Y=} "
+                          f"{src_index=} {dest_index=}")
+
+            if src_index == dest_index or src_index < 0 or dest_index < 0:
+                _logger.debug("Dropped on self, no change")
+                return
+
+            if src_index < dest_index:
+                # Moving from above current position, we remove first so we
+                # will end up moving the destination up.
+                dest_index -= 1
+
+            src_control = self.ItemListBox.Items[src_index]
+            self.ItemListBox.Items.RemoveAt(src_index)
+            self.ItemListBox.Items.Insert(dest_index, src_control)
+
+    def ReorderDlg_PrevMLBDown(self, caller, event):
+        self._dragstartpoint = event.GetPosition(None)
+
+    def ReorderDlg_QueryContinueDrag(self, caller, event):
+        # Reset the style of the drug beam name when the left mouse is
+        # releaesed, do not mark as handled so normal handling finishes the
+        # rest of the drop
+        if not (event.KeyStates & DragDropKeyStates.LeftMouseButton) == DragDropKeyStates.LeftMouseButton:
+            _logger.debug(f"Stopping drag {event.KeyStates=}")
+            # Left click released, this was a drop event.
+            if isinstance(caller, ListBoxItem):
+                caller.Visibility = Visibility.Visible
+
+            if self._dragdropwindow is not None:
+                self._dragdropwindow.Close()
+                self._dragdropwindow = None
+
+    def do_reorder(self):
+        pass
+
+    def OK_Click(self, caller, event):
+        try:
+            self.do_reorder()
+            self.DialogResult = True
+        finally:
+            self.Close()
+
+
+class BeamReorderDialog(GenericReorderDialog):
     _XAML = """
 <Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
@@ -650,11 +981,11 @@ class BeamReorderDialog(RayWindow):
             <TextBox x:Name="FirstBeamNo" MinWidth="20">1</TextBox>
         </StackPanel>
         <StackPanel Orientation="Horizontal">
-            <StackPanel x:Name="BeamNumbers">
+            <StackPanel x:Name="ItemNumbers">
                 <Label>1</Label>
                 <Label>2</Label>
             </StackPanel>
-            <ListBox x:Name="BeamList" AllowDrop="True">
+            <ListBox x:Name="ItemListBox" AllowDrop="True">
                 <ListBoxItem Background="{DynamicResource TopHalf}"
                              Content="Beam_1 [10MV T0 G181-179]" />
                 <ListBoxItem Background="{DynamicResource BottomHalf}"
@@ -671,109 +1002,76 @@ class BeamReorderDialog(RayWindow):
 </Window>
 """
 
-    BeamList = None  # ListBox
-    BeamNumbers = None  # StackPanel
-    BtnOK = None  # Button (OK)
     FirstBeamNo = None  # Text
-    _results = None  # dict for results
-    _list_in = None  # list of list_in
-    _dragstartpoint = None  # When dragging, screen coordinates of start
-
-    # C.f. https://stackoverflow.com/a/27975085
-    _dragdropwindow = None  # Preview window of object being drug
 
     def __init__(self, list_in, results):
-        self.LoadComponent(self._XAML)
+        super().__init__(list_in, results)
 
         if 'description' in results:
             self.PickerLabel.Content = results['description']
 
-        self.BeamList.Items.Clear()
-        self.BeamList.PreviewMouseMove += self.BeamOrderPreviewMouseMove
-
-        self.BeamNumbers.Children.Clear()
-
-        self._list_in = {obj_name(obj): obj for obj in list_in}
-
+        self.FirstBeamNo.Text = f"{self.lowest_n}"
         self.FirstBeamNo.TextChanged += self.FirstBeamChanged
-
-        try:
-            lowest_n = min([beam.Number for beam in list_in])
-        except (ValueError, AttributeError):
-            lowest_n = 1
-
-        self.FirstBeamNo.Text = f"{lowest_n}"
-        self.FirstBeamNo.PreviewMouseWheel += self.PreviewMouseWheelHandler
-
-        self.BtnOK.Click += self.OK_Click
-
-        self._results = results
+        self.FirstBeamNo.PreviewMouseWheel += StaticMWHandler_IncDecScroll
 
         _logger.debug(f"{results=}")
-        for i, obj_name_in in enumerate(self._list_in):
-            beam = self._list_in[obj_name_in]
-            n_label = Label()
-            n_label.Content = f"{lowest_n + i}"
 
-            _logger.debug(f"{n_label=}")
+    @staticmethod
+    def BuildLBI(item_name, item):
+        beam = item
+        lbi = ListBoxItem()
 
-            self.BeamNumbers.Children.Add(n_label)
+        beam_desc = (f"{beam.BeamQualityId}MV "
+                        f"T{beam.CouchRotationAngle:0.0f} "
+                        f"G{beam.GantryAngle:0.0f}")
 
-            lbi = ListBoxItem()
+        if beam.ArcStopGantryAngle is not None:
+            beam_desc += f"-{beam.ArcStopGantryAngle:0.0f}"
 
-            beam_desc = (f"{beam.BeamQualityId}MV "
-                         f"T{beam.CouchRotationAngle:0.0f} "
-                         f"G{beam.GantryAngle:0.0f}")
+        lbi.Tag = f"{item_name}"
+        lbi.Content = f"{item_name} [{beam_desc}]"
 
-            if beam.ArcStopGantryAngle is not None:
-                beam_desc += f"-{beam.ArcStopGantryAngle:0.0f}"
+        try:
+            """
+            #  This is really slow, but still the fastest way.
 
-            lbi.Tag = f"{obj_name_in}"
-            lbi.Content = f"{obj_name_in} [{beam_desc}]"
+            # Simplified to just using the initial jaw positions if they
+            # exist, and if not the first CP.
+            jaw_extremes = [(min(j), max(j)) for j in
+                            zip(*[s.JawPositions for s in beam.Segments])]
+            tt = (f"X1: {jaw_extremes[0][0]:0.1f}\n"
+                    f"X2: {jaw_extremes[1][1]:0.1f}\n"
+                    f"Y1: {jaw_extremes[2][0]:0.1f}\n"
+                    f"Y2: {jaw_extremes[3][1]:0.1f}")
+            """
 
-            try:
-                """
-                #  This is really slow, but still the fastest way.
+            if beam.InitialJawPositions is not None:
+                tt = (f"X1: {beam.InitialJawPositions[0]:0.1f}\n"
+                        f"X2: {beam.InitialJawPositions[1]:0.1f}\n"
+                        f"Y1: {beam.InitialJawPositions[2]:0.1f}\n"
+                        f"Y2: {beam.InitialJawPositions[3]:0.1f}")
+            else:
+                tt = ("Segment 1 Jaw:\n"
+                        f"X1: {beam.Segments[0].JawPositions[0]:0.1f}\n"
+                        f"X2: {beam.Segments[0].JawPositions[1]:0.1f}\n"
+                        f"Y1: {beam.Segments[0].JawPositions[2]:0.1f}\n"
+                        f"Y2: {beam.Segments[0].JawPositions[3]:0.1f}")
 
-                # Simplified to just using the initial jaw positions if they
-                # exist, and if not the first CP.
-                jaw_extremes = [(min(j), max(j)) for j in
-                                zip(*[s.JawPositions for s in beam.Segments])]
-                tt = (f"X1: {jaw_extremes[0][0]:0.1f}\n"
-                      f"X2: {jaw_extremes[1][1]:0.1f}\n"
-                      f"Y1: {jaw_extremes[2][0]:0.1f}\n"
-                      f"Y2: {jaw_extremes[3][1]:0.1f}")
-                """
+            lbi.ToolTip = tt
+        except (ValueError, TypeError, AttributeError,
+                ArgumentOutOfRangeException):
+            pass
 
-                if beam.InitialJawPositions is not None:
-                    tt = (f"X1: {beam.InitialJawPositions[0]:0.1f}\n"
-                          f"X2: {beam.InitialJawPositions[1]:0.1f}\n"
-                          f"Y1: {beam.InitialJawPositions[2]:0.1f}\n"
-                          f"Y2: {beam.InitialJawPositions[3]:0.1f}")
-                else:
-                    tt = ("Segment 1 Jaw:\n"
-                          f"X1: {beam.Segments[0].JawPositions[0]:0.1f}\n"
-                          f"X2: {beam.Segments[0].JawPositions[1]:0.1f}\n"
-                          f"Y1: {beam.Segments[0].JawPositions[2]:0.1f}\n"
-                          f"Y2: {beam.Segments[0].JawPositions[3]:0.1f}")
+        _logger.debug(f"{lbi=}, {item_name=}")
+        return lbi
 
-                lbi.ToolTip = tt
-            except (ValueError, TypeError, AttributeError,
-                    ArgumentOutOfRangeException):
-                pass
-
-            lbi.PreviewMouseLeftButtonDown += self.BeamOrder_PrevMLBDown
-            lbi.Drop += self.BeamOrder_Drop
-            lbi.DragOver += self.BeamOrder_DragOver
-            lbi.DragLeave += self.BeamOrder_DragLeave
-            lbi.QueryContinueDrag += self.Beam_QueryContinueDrag
-            lbi.GiveFeedback += self.BeamOrder_GiveFeedback
-
-            _logger.debug(f"{lbi=}, {obj_name_in=}")
-
-            self.BeamList.Items.Add(lbi)
-
-        self.BeamList.Drop += self.BeamList_Drop
+    @property
+    def lowest_n(self):
+        try:
+            lowest_n = min([beam.Number for beam in self._list_in.items()])
+        except (ValueError, AttributeError):
+            lowest_n = 1
+        return lowest_n
 
     def FirstBeamChanged(self, caller, event):
         # _logger.debug(f"{caller=} {event=}")
@@ -781,229 +1079,133 @@ class BeamReorderDialog(RayWindow):
             newval = max(int(caller.Text), 1)
             caller.Text = f'{newval}'
             _logger.debug(f"{newval=}")
-            for i, label in enumerate(self.BeamNumbers.Children):
+            for i, label in enumerate(self.ItemNumbers.Children):
                 _logger.debug(f"{label=}, {label.Content=}")
                 label.Content = f"{newval + i}"
         except (ValueError):
             _logger.error("Error with number")
 
-    def BeamOrderPreviewMouseMove(self, caller, event):
-        if event.LeftButton:
-            try:
-                # _logger.debug(f"{caller=} {event=}")
-                pos_in_screen = event.GetPosition(None)
-                ddx = pos_in_screen.X - self._dragstartpoint.X
-                ddy = pos_in_screen.Y - self._dragstartpoint.Y
+    def do_reorder(self):
+        beam_start = int(self.FirstBeamNo.Text)
+        for i, item in enumerate(self.ItemListBox.Items):
+            beam = self._list_in[item.Tag]
+            # Add 100 to the number so we don't break things.
+            beam.Number = 100 + beam_start + i
 
-                source = event.OriginalSource
-                while (source is not None and
-                       not isinstance(source, ListBoxItem)):
-                    source = source.VisualParent
 
-                if source is None:
-                    _logger.debug(f"Bubbled from {event.OriginalSource=} and"
-                                  " got to None before ListBoxItem")
-                    return
+class SegmentReorderDialog(GenericReorderDialog):
+    _XAML = None
+    MLCStyleTemplate = None # Style template for mlc "TextBox" (renders MLCs)
 
-                moved_enough = False
+    def __init__(self, list_in, results):
+        self._beam = list_in
 
-                if source != caller:
-                    moved_enough = True
+        segments = self._beam.Segments
+        super().__init__(segments, results)
+        self.MLCStyleTemplate = self.window.FindResource("MLCTemplate")
+        self.Resources["MLCRenderScale"] = self.calc_mlc_scale(segments)
 
-                moved_enough |= pow(pow(ddx, 2) + pow(ddy, 2), 0.5) >= 5
+    @staticmethod
+    def calc_mlc_scale(segments):
+        jaw_extremes = [(min(j), max(j)) for j in
+                        zip(*[s.JawPositions for s in segments])]
 
-                pos_from_source = event.GetPosition(source)
-                _logger.debug(f"X: {pos_from_source.X} Y:{pos_from_source.Y}"
-                              f"{source.ActualHeight=} {source.ActualWidth=}")
+        # Scale to 2 cm beyond the largest jaw position
+        scale = 20. / (max([j[1] for j in jaw_extremes]) + 2)
+        return scale
 
-                moved_enough |= (pos_from_source.X < 3 or
-                                 pos_from_source.X > source.ActualWidth - 3 or
-                                 pos_from_source.Y < 3 or
-                                 pos_from_source.Y > source.ActualHeight - 3)
+    @staticmethod
+    def get_mlc_polygon(segment, layer):
+        LEAF_LEN = 15.5
 
-                if not moved_enough:
-                    _logger.debug(f"drag more. {ddx=} {ddy=}")
-                    return
+        pts_bank0 = []
+        pts_bank1 = []
+        for lcp, lwidth, lp_bank0, lp_bank1 in zip(layer.LeafCenterPositions,
+                                                   layer.LeafWidths,
+                                                   *segment.LeafPositions):
 
-                src_index = self.BeamList.Items.IndexOf(source)
+            # Note: We can chose to render based on the actual leaf size,
+            #  or run the leaf all the way back to -20...
 
-                # _logger.debug(f"{source=} {src_index=}")
+            pts_bank0 += [(lp_bank0 - LEAF_LEN, lcp - lwidth/2),
+                          (lp_bank0, lcp - lwidth/2),
+                          (lp_bank0, lcp + lwidth/2),
+                          (lp_bank0 - LEAF_LEN, lcp + lwidth/2)]
 
-                if source is None:
-                    return
+            pts_bank1 += [(lp_bank1 + LEAF_LEN, lcp - lwidth/2),
+                          (lp_bank1, lcp - lwidth/2),
+                          (lp_bank1, lcp + lwidth/2),
+                          (lp_bank1 + LEAF_LEN, lcp + lwidth/2)]
 
-                self.BuildPreviewWindow(source)
-                source.Visibility = Visibility.Collapsed
+        #bot_b0 = (-20, pts_bank0[0][1])
+        #bot_b1 = (20, pts_bank1[0][1])
 
-                DragDrop.DoDragDrop(source, src_index, DragDropEffects.Move)
-            except (AttributeError, ValueError) as e:
-                _logger.error(f"Couldn't start drag: {e}")
+        bot_b0 = (-20, 20)
+        top_b0 = (-20, -20)
+        bot_b1 = (20, 20)
+        top_b1 = (20, -20)
 
-    def BuildPreviewWindow(self, caller):
-        _logger.debug(f"{caller=}")
-        if self._dragdropwindow is not None:
-            try:
-                self._dragdropwindow.Close()
-            except Exception as e:
-                _logger.error(f"{e}")
-            finally:
-                self._dragdropwindow = None
+        pt_list = [top_b0,
+                   *pts_bank0,
+                   bot_b0,
+                   top_b0,
+                   top_b1,
+                   *pts_bank1,
+                   bot_b1,
+                   top_b1,
+                   top_b0]
 
-        ddw = Window()
-        self._dragdropwindow = ddw
-        ddw.WindowStyle = getattr(WindowStyle, 'None')
-        ddw.AllowTransparency = True
-        ddw.AllowDrop = False
-        ddw.Background = Brushes.White
-        ddw.IsHitTestVisible = False
-        ddw.SizeToContent = SizeToContent.WidthAndHeight
-        ddw.Topmost = True
-        ddw.ShowInTaskbar = False
+        return ' '.join([','.join(map(str, pt)) for pt in pt_list])
 
-        r = Rectangle()
-        r.Width = caller.ActualWidth/2
-        r.Height = caller.ActualHeight/2
+    def BuildLBI(self, item_name, item):
+        segment = item
+        layer = self._beam.UpperLayer
 
-        clone = XamlReader.Load(XmlReader.Create(StringReader(
-            XamlWriter.Save(caller))))
+        lbi = ListBoxItem()
 
-        clone.IsSelected = False
+        dp = DockPanel()
+        lbi.Content = dp
+        dp.LastChildFill = False
 
-        r.Fill = VisualBrush(clone)
+        label = Label()
+        label.Content = (f'Beam {obj_name(self._beam)}, '
+                         f'CP{segment.SegmentNumber}')
+        dp.Children.Add(label)
 
-        ddw.Content = r
+        mlc_points = self.get_mlc_polygon(segment, layer)
+        _logger.debug(f"{mlc_points=}")
 
-        cursor_pos = GetCursorPos()
+        mlc_tb = TextBox()
 
-        ddw.Left = cursor_pos[0] + 10
-        ddw.Top = cursor_pos[1] + 10
-        ddw.Show()
-        _logger.debug(f"{ddw=} {cursor_pos=}")
+        # mlc_tb.Tag = jp for jp in segment.JawPositions
+        mlc_tb.Tag = SystemArray[SystemDouble](segment.JawPositions)
+        #mlc_tb.Tag = SystemArray[SystemDouble]([-20, 20, -20, 20])
+        mlc_tb.Text = f'{mlc_points}'
 
-    def BeamList_Drop(self, caller, event):
-        src_index = event.Data.GetData(int)
-        dest_index = len(self.BeamList.Items)
+        mlc_TT = ToolTip()
+        mlc_TT_tb = TextBox()
 
-        _logger.debug(f"Dropped on List and not ListItem"
-                      f"{src_index=} {dest_index=}")
+        mlc_TT_tb.Tag = mlc_tb.Tag
+        mlc_TT_tb.Text = mlc_tb.Text
+        mlc_TT_tb.FontSize = 1.0
+        mlc_TT_tb.Width = mlc_TT_tb.Height = 200
 
-        if src_index == dest_index or src_index < 0 or dest_index < 0:
-            _logger.debug("Dropped on self, no change")
-            return
+        mlc_TT_tb.Style = self.window.FindResource("MLCTemplate")
+        #mlc_TT.Content = self.CloneUsingImage(mlc_tb, 192, 100, 100)
+        mlc_TT.Content = mlc_TT_tb
+        
+        _logger.debug(f'{self.window.FindResource("MLCTemplate")=}')
+        mlc_tb.ToolTip = mlc_TT
 
-        if src_index < dest_index:
-            # Moving from above current position, we remove first so we
-            # will end up moving the destination up.
-            dest_index -= 1
+        # mlc_tb.Style = self.MLCStyleTemplate
 
-        src_control = self.BeamList.Items[src_index]
-        self.BeamList.Items.RemoveAt(src_index)
-        self.BeamList.Items.Insert(dest_index, src_control)
+        dp.Children.Add(mlc_tb)
 
-    def BeamOrder_DragOver(self, caller, event):
-        event.Effects = getattr(DragDropEffects, 'None')
-        src_index = event.Data.GetData(int)
-        if src_index != self.BeamList.Items.IndexOf(caller):
-            event.Effects = DragDropEffects.Move
+        return lbi
 
-            drop_pos = event.GetPosition(caller)
-            # _logger.debug(f"{drop_pos.X=} {drop_pos.Y=} {caller.Height=}")
+    def do_reorder(self):
+        pass
 
-            if drop_pos.Y < caller.Height/2:
-                # Top Half
-                res_name = "TopHalf"
-            else:
-                res_name = "BottomHalf"
-
-            caller.SetResourceReference(ListBoxItem.BackgroundProperty,
-                                        res_name)
-
-    def BeamOrder_GiveFeedback(self, caller, event):
-        # _logger.debug(f"{caller=} {event=}")
-        cursor_pos = GetCursorPos()
-        self._dragdropwindow.Left = cursor_pos[0] + 10
-        self._dragdropwindow.Top = cursor_pos[1] + 10
-
-    def BeamOrder_DragLeave(self, caller, event):
-        caller.ClearValue(ListBoxItem.BackgroundProperty)
-
-    def BeamOrder_Drop(self, caller, event):
-        _logger.debug(f"{caller=} {event=}")
-
-        if isinstance(caller, ListBoxItem):
-            event.Handled = True  # Either way, this is the right destination
-            caller.ClearValue(ListBoxItem.BackgroundProperty)
-            src_index = event.Data.GetData(int)
-            dest_index = self.BeamList.Items.IndexOf(caller)
-
-            drop_pos = event.GetPosition(caller)
-
-            if drop_pos.Y < caller.Height/2:
-                # Top Half, insert "source" before "caller"
-                pass
-            else:
-                # Insert "source" after "caller"
-                dest_index += 1
-
-            _logger.debug(f"{drop_pos.X=} {drop_pos.Y=} "
-                          f"{src_index=} {dest_index=}")
-
-            if src_index == dest_index or src_index < 0 or dest_index < 0:
-                _logger.debug("Dropped on self, no change")
-                return
-
-            if src_index < dest_index:
-                # Moving from above current position, we remove first so we
-                # will end up moving the destination up.
-                dest_index -= 1
-
-            src_control = self.BeamList.Items[src_index]
-            self.BeamList.Items.RemoveAt(src_index)
-            self.BeamList.Items.Insert(dest_index, src_control)
-
-    def BeamOrder_PrevMLBDown(self, caller, event):
-        self._dragstartpoint = event.GetPosition(None)
-
-    def PreviewMouseWheelHandler(self, caller, event):
-        try:
-            scale = ValScale.get(Keyboard.Modifiers, 1)
-            valdelta = int(event.Delta * scale / 120.)
-
-            if hasattr(caller, "Value"):
-                caller.Value += valdelta
-            elif hasattr(caller, "Text"):
-                caller.Text = '%d' % (int(caller.Text) + valdelta)
-
-        except ValueError:
-            pass
-        except Exception as ex:
-            _logger.exception(ex)
-
-    def Beam_QueryContinueDrag(self, caller, event):
-        # Reset the style of the drug beam name when the left mouse is
-        # releaesed, do not mark as handled so normal handling finishes the
-        # rest of the drop
-        if not (event.KeyStates & DragDropKeyStates.LeftMouseButton):
-            _logger.debug(f"Stopping drag {event.KeyStates=}")
-            # Left click released, this was a drop event.
-            if isinstance(caller, ListBoxItem):
-                caller.Visibility = Visibility.Visible
-
-            if self._dragdropwindow is not None:
-                self._dragdropwindow.Close()
-                self._dragdropwindow = None
-
-    def OK_Click(self, caller, event):
-        try:
-            beam_start = int(self.FirstBeamNo.Text)
-            for i, item in enumerate(self.BeamList.Items):
-                beam = self._list_in[item.Tag]
-                # Add 100 to the number so we don't break things.
-                beam.Number = 100 + beam_start + i
-
-            self.DialogResult = True
-        finally:
-            self.Close()
 
 
 def obj_name(obj, name_identifier_object='.', strict=False):
