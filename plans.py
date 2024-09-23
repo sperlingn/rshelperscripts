@@ -596,7 +596,7 @@ def copy_beams(plan_in, beamset_in, plan_out, beamset_out, # noqa: C901
             #                   f'{acp_in=}\n{acp_out=}\n{arc_params=}',
             #                   exc_info=True)
 
-            n_arc_params = params_from_mapping(acp_in,
+            n_arc_params = params_from_mapping(acp_out,
                                                _ARC_BEAM_OPT_PARAM_MAPPING)
             if arc_params != n_arc_params:
                 _logger.debug(f"Updating arc params for beam"
