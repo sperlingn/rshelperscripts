@@ -1,8 +1,7 @@
 import logging
 from collections import defaultdict
 
-from .external import (CompositeAction as _CompositeAction,
-                       rs_hasattr as _rs_hasattr)
+from .external import CompositeAction, rs_hasattr
 
 _logger = logging.getLogger(__name__)
 
@@ -21,7 +20,7 @@ _MINUSES = [m + s + 'TV' for m in ['-', ' - '] for s in 'PCG']
 def params_from_fn(fn):
     params = {key: getattr(fn.PlanningGoal, _PARAM_MAPPING[key])
               for key in _PARAM_MAPPING
-              if _rs_hasattr(fn.PlanningGoal, _PARAM_MAPPING[key])}
+              if rs_hasattr(fn.PlanningGoal, _PARAM_MAPPING[key])}
 
     params['RoiName'] = fn.ForRegionOfInterest.Name
 
@@ -54,7 +53,7 @@ def add_minus_goals(plan):
 
     rois_to_fn_map = fns_to_dup(eval_fns, rois_to_minuses_map)
 
-    with _CompositeAction("Add clinical goals for <X - [PCG]TV>"):
+    with CompositeAction("Add clinical goals for <X - [PCG]TV>"):
         for roi_name in rois_to_fn_map:
             for fn in rois_to_fn_map[roi_name]:
                 fnparams = params_from_fn(fn)
@@ -65,6 +64,9 @@ def add_minus_goals(plan):
 
 def copy_clinical_goal(goal_in, evalsetup_out):
     fnparams = params_from_fn(goal_in)
+
+    print(f"{fnparams=}")
+    _logger.debug(f"{fnparams=}")
     evalsetup_out.AddClinicalGoal(**fnparams)
 
 
@@ -77,5 +79,10 @@ def copy_clinical_goals(plan_in, plan_out):
     for fn in existing_goals:
         evalsetup_out.DeleteClinicalGoal(FunctionToRemove=fn)
 
-    for fn in evalsetup_in.EvaluationFunctions:
-        copy_clinical_goal(fn, evalsetup_out)
+    uniq_fns = [{k: v for (k, v) in unq_fn} for unq_fn in
+                {frozenset(params_from_fn(fn).items())
+                 for fn in evalsetup_in.EvaluationFunctions}]
+
+    _logger.debug(f"Copying goals: {uniq_fns}")
+    for fn_params in uniq_fns:
+        evalsetup_out.AddClinicalGoal(**fn_params)
