@@ -500,9 +500,16 @@ def copy_rx(beamset_in, beamset_out):
             last_rx.SetPrimaryPrescriptionDoseReference()
 
 
-def beam_opt_settings_from_plan(plan, beam):
+def beam_opt_settings_from_plan(plan, beamset, beam):
+    bsid = beamset.UniqueId
     for opt in plan.PlanOptimizations:
+        # Skip if this is not an opt for this plan.
+        if bsid not in (obs.UniqueId for obs in opt.OptimizedBeamSets):
+            continue
         for tx_setup in opt.OptimizationParameters.TreatmentSetupSettings:
+            if tx_setup.ForTreatmentSetup.UniqueId != bsid:
+                # Not for this beamset, skip.
+                continue
             for beamsetting in tx_setup.BeamSettings:
                 # Name should be unique in a plan, but we can't compare using
                 # ForBeam == beam because they are references to objects and
@@ -577,8 +584,10 @@ def copy_beams(plan_in, beamset_in, plan_out, beamset_out, # noqa: C901
 
         # Need to set optmization settings for this beam in order to build
         # control points.
-        beamsetting_in = beam_opt_settings_from_plan(plan_in, beam_in)
-        beamsetting_out = beam_opt_settings_from_plan(plan_out, beam_out)
+        beamsetting_in = beam_opt_settings_from_plan(plan_in, beamset_in,
+                                                     beam_in)
+        beamsetting_out = beam_opt_settings_from_plan(plan_out, beamset_out,
+                                                      beam_out)
 
         if 'Arc' in beam_in.DeliveryTechnique:
             acp_in = beamsetting_in.ArcConversionPropertiesPerBeam
