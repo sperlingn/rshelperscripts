@@ -1276,7 +1276,7 @@ M-19,-.5 v1 m1,-1 v1 m1,-1 v1 m1,-1 v1 m2,-1 v1 m1,-1 v1 m1,-1 v1 m1,-1 v1
     def __init__(self, list_in, results):
         self._beam = list_in
 
-        segments = MakeMockery('Segments', self._beam)
+        segments = MakeMockery(self._beam, 'Segments')
         super().__init__(segments, results)
         self.MLCStyleTemplate = self.window.FindResource("MLCTemplate")
         self.Resources["MLCRenderScale"] = self.calc_mlc_scale(segments)
@@ -1373,8 +1373,8 @@ M-19,-.5 v1 m1,-1 v1 m1,-1 v1 m1,-1 v1 m2,-1 v1 m1,-1 v1 m1,-1 v1 m1,-1 v1
         return lbi
 
     def do_reorder(self):
-        for i, (seg_out, item) in zip(self._beam.Segments,
-                                      self.ItemList.Items):
+        for i, (seg_out, item) in enumerate(zip(self._beam.Segments,
+                                            self.ItemListBox.Items)):
             seg_in = self._list_in[item.Tag]
             seg_in.CopyTo(seg_out)
 

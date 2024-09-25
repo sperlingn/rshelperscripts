@@ -6,7 +6,7 @@ from collections.abc import Sequence
 _logger = getLogger(__name__)
 
 try:
-    from System import DateTime as _datetime
+    from System import DateTime
 
     class dt_pickle(DateTime):
         def __reduce_ex__(self, version):
@@ -260,7 +260,9 @@ class MockObject(object, metaclass=MetaSlotsFromHints):
         # list in _COPY_EXCLUDE.
         hints = get_type_hints(self)
         attrs = set(self._COPY_ONLY if self._COPY_ONLY else hints.keys())
-        attrs -= set(self._COPY_EXCLUDE)
+
+        if self._COPY_EXCLUDE:
+            attrs -= set(self._COPY_EXCLUDE)
 
         for attr, val in [(attr, getattr(self, attr)) for attr in attrs
                           if attr[0] != '_'
@@ -276,16 +278,19 @@ class MockObject(object, metaclass=MetaSlotsFromHints):
         # Hack to allow us to use deepcopy which uses protocol version 4
         out = super().__reduce_ex__(version)
         if version == 4:
-            # Currently deepcopy uses version 4, we need to translate some
-            #  objects which do not support pickling such as DateTime
-            c_fn, bases, dictandslots, *rest = out
-            for indict in dictandslots:
-                if indict is not None:
-                    for val in indict.values():
-                        if isinstance(val, DateTime):
-                            val.__class__ = dt_pickle
+            try:
+                # Currently deepcopy uses version 4, we need to translate some
+                #  objects which do not support pickling such as DateTime
+                c_fn, bases, dictandslots, *rest = out
+                for indict in dictandslots:
+                    if indict is not None:
+                        for val in indict.values():
+                            if isinstance(val, DateTime):
+                                val.__class__ = dt_pickle
 
-            out = (c_fn, bases, dictandslots, *rest)
+                out = (c_fn, bases, dictandslots, *rest)
+            except (ValueError, TypeError):
+                pass
         return out
 
 
