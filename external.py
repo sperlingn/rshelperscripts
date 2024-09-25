@@ -662,6 +662,8 @@ class GenericReorderDialog(RayWindow):
 
             lbi = self.BuildLBI(item_name, item)
 
+            lbi.Tag = item_name
+
             n_label = Label()
             n_label.Content = f"{lowest_n + i}"
 
@@ -913,7 +915,8 @@ class GenericReorderDialog(RayWindow):
                 self._dragdropwindow = None
 
     def do_reorder(self):
-        pass
+        raise NotImplemenetedError(f"{self.__class__.__name__} must "
+                                   "implement do_reorder")
 
     def OK_Click(self, caller, event):
         try:
@@ -1028,7 +1031,6 @@ class BeamReorderDialog(GenericReorderDialog):
         if beam.ArcStopGantryAngle is not None:
             beam_desc += f"-{beam.ArcStopGantryAngle:0.0f}"
 
-        lbi.Tag = f"{item_name}"
         lbi.Content = f"{item_name} [{beam_desc}]"
 
         try:
@@ -1094,24 +1096,198 @@ class BeamReorderDialog(GenericReorderDialog):
 
 
 class SegmentReorderDialog(GenericReorderDialog):
-    _XAML = None
+    _XAML = """
+<Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+        xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+        xmlns:System="clr-namespace:System;assembly=mscorlib"
+        Title="Select List"
+        SizeToContent="WidthAndHeight"
+        Foreground="#FF832F2F"
+        Topmost="True"
+        WindowStartupLocation="CenterOwner"
+        ResizeMode="NoResize"
+        WindowStyle="ThreeDBorderWindow" MinWidth="192"
+        FontSize="24">
+
+    <Window.Resources>
+        <Style TargetType="{x:Type StackPanel}">
+            <Setter Property="Margin" Value="0"/>
+        </Style>
+        <Style TargetType="{x:Type Label}">
+            <Setter Property="VerticalAlignment" Value="Center"/>
+        </Style>
+        <Style TargetType="{x:Type Button}">
+            <Setter Property="Margin" Value="5" />
+            <Setter Property="Padding" Value="5" />
+        </Style>
+        <Style TargetType="{x:Type ListBoxItem}">
+            <Setter Property="Height" Value="42"/>
+            <Setter Property="BorderBrush" Value="Black"/>
+            <Setter Property="AllowDrop" Value="true"/>
+        </Style>
+        <LinearGradientBrush x:Key="TopHalf" EndPoint="0.5,0.5"
+                             StartPoint="0.5,0">
+            <GradientStop Color="White" Offset="0"/>
+            <GradientStop Color="#FF7C7C7C" Offset="0.05"/>
+            <GradientStop Color="#FFF9F9F9" Offset="0.95"/>
+            <GradientStop Color="White" Offset="1"/>
+        </LinearGradientBrush>
+        <LinearGradientBrush x:Key="BottomHalf" EndPoint="0.5,1"
+                             StartPoint="0.5,0.5">
+            <GradientStop Color="White" Offset="0"/>
+            <GradientStop Color="#FFF9F9F9" Offset="0.05"/>
+            <GradientStop Color="#FF7C7C7C" Offset="0.95"/>
+            <GradientStop Color="White" Offset="1"/>
+        </LinearGradientBrush>
+        <SolidColorBrush x:Key="WhiteTransparent" Color="#7FFFFFFF"/>
+        <Style x:Key="MLCTemplate" TargetType="{x:Type TextBox}">
+            <!--<Setter Property="FontSize" Value="{Binding Path=Tag, RelativeSource={RelativeSource FindAncestor, AncestorType={x:Type ListBox}}}"/>-->
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="{x:Type TextBox}">
+                        <Border Background="White" BorderBrush="Black" BorderThickness="1">
+                            <Viewbox Width="{TemplateBinding Width}" Height="{TemplateBinding Height}" ClipToBounds="True">
+                            <Canvas Width="40" Height="40" Background="White" RenderTransformOrigin="0.5,0.5">
+                                <Canvas.RenderTransform>
+                                    <TransformGroup>
+                                        <ScaleTransform ScaleX="{Binding RelativeSource={RelativeSource TemplatedParent}, Path=FontSize}"
+                                                        ScaleY="{Binding RelativeSource={RelativeSource TemplatedParent}, Path=FontSize}"/>
+                                        <SkewTransform/>
+                                        <RotateTransform/>
+                                        <TranslateTransform/>
+                                    </TransformGroup>
+                                </Canvas.RenderTransform>
+                                <TextBlock x:Name="TemplateJawsPoints" Visibility="Collapsed" >
+                                    <TextBlock.Text>
+                                        <MultiBinding StringFormat="{}{0},{3} {1},{3} {1},{2} {0},{2} {0},{3}">
+                                            <Binding RelativeSource="{RelativeSource TemplatedParent}" Path="Tag[0]"/>
+                                            <Binding RelativeSource="{RelativeSource TemplatedParent}" Path="Tag[1]"/>
+                                            <Binding RelativeSource="{RelativeSource TemplatedParent}" Path="Tag[2]"/>
+                                            <Binding RelativeSource="{RelativeSource TemplatedParent}" Path="Tag[3]"/>
+                                        </MultiBinding>
+                                    </TextBlock.Text>
+                                </TextBlock>
+                                <Rectangle Width="40" Height="40" Panel.ZIndex="1">
+                                    <Rectangle.Fill>
+                                        <SolidColorBrush Color="#FF5EB6FF" Opacity="0.8"/>
+                                    </Rectangle.Fill>
+                                    <Rectangle.Clip>
+                                        <GeometryGroup>
+                                            <RectangleGeometry Rect="0,0,40,40"/>
+                                            <PathGeometry>
+                                                <PathGeometry.Figures>
+                                                    <PathFigure IsClosed="True">
+                                                        <PolyLineSegment Points="{Binding Text, ElementName=TemplateJawsPoints}" />
+                                                    </PathFigure>
+                                                </PathGeometry.Figures>
+                                                <PathGeometry.Transform>
+                                                    <TransformGroup>
+                                                        <TranslateTransform X="20" Y="20"/>
+                                                    </TransformGroup>
+                                                </PathGeometry.Transform>
+                                            </PathGeometry>
+                                        </GeometryGroup>
+                                    </Rectangle.Clip>
+                                </Rectangle>
+                                <Polygon Fill="#FF005DFF" Canvas.Left="20" Canvas.Top="20" Points="{Binding Text, RelativeSource={RelativeSource TemplatedParent}}" Stroke="#FF80C5FF" StrokeThickness="0.2" StrokeLineJoin="Bevel">
+                                        <Polygon.RenderTransform>
+                                            <TransformGroup>
+                                                <ScaleTransform ScaleY="-1" ScaleX="1"/>
+                                                <SkewTransform AngleY="0" AngleX="0"/>
+                                                <RotateTransform Angle="0"/>
+                                                <TranslateTransform/>
+                                            </TransformGroup>
+                                        </Polygon.RenderTransform>
+                                    </Polygon>
+                                <Path x:Name="Crosshair" Canvas.Left="20" Canvas.Top="20" Stroke="Blue" StrokeThickness="0.1"
+                                    Data="M 0,-20 v40 M -20,0 h40
+                                      M-1,-20 h2 m-2,5 h2 m-2,5 h2 m-2,5 h2 m-2,10 h2 m-2,5 h2 m-2,5 h2 m-2,5 h2
+                                      M-20,-1 v2 m5,-2 v2 m5,-2 v2 m5,-2 v2 m10,-2 v2 m5,-2 v2 m5,-2 v2 m5,-2 v2
+                                      M-.5,-19 h1 m-1,1 h1 m-1,1 h1 m-1,1 h1 m-1,2 h1 m-1,1 h1 m-1,1 h1 m-1,1 h1 m-1,2 h1 m-1,1 h1 m-1,1 h1 m-1,1 h1 m-1,2 h1 m-1,1 h1 m-1,1 h1 m-1,1 h1 m-1,2 h1 m-1,1 h1 m-1,1 h1 m-1,1 h1 m-1,2 h1 m-1,1 h1 m-1,1 h1 m-1,1 h1 m-1,2 h1 m-1,1 h1 m-1,1 h1 m-1,1 h1 m-1,2 h1 m-1,1 h1 m-1,1 h1 m-1,1 h1
+                                      M-19,-.5 v1 m1,-1 v1 m1,-1 v1 m1,-1 v1 m2,-1 v1 m1,-1 v1 m1,-1 v1 m1,-1 v1 m2,-1 v1 m1,-1 v1 m1,-1 v1 m1,-1 v1 m2,-1 v1 m1,-1 v1 m1,-1 v1 m1,-1 v1 m2,-1 v1 m1,-1 v1 m1,-1 v1 m1,-1 v1 m2,-1 v1 m1,-1 v1 m1,-1 v1 m1,-1 v1 m2,-1 v1 m1,-1 v1 m1,-1 v1 m1,-1 v1 m2,-1 v1 m1,-1 v1 m1,-1 v1 m1,-1 v1"/>
+                            </Canvas>
+                        </Viewbox>
+                        </Border>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+        <System:Double x:Key="MLCRenderScale">1.0</System:Double>
+    </Window.Resources>
+    <Window.TaskbarItemInfo>
+        <TaskbarItemInfo ProgressState="Normal" ProgressValue="50"/>
+    </Window.TaskbarItemInfo>
+
+    <StackPanel Background="#FFE6E6E6" MinHeight="20">
+        <StackPanel Orientation="Horizontal" Margin="5">
+            <Label x:Name="PickerLabel" Content="Beam Start Number:"/>
+            <TextBox x:Name="FirstBeamNo" MinWidth="20">1</TextBox>
+        </StackPanel>
+        <StackPanel Orientation="Horizontal">
+            <StackPanel x:Name="ItemNumbers">
+                <Label>1</Label>
+                <Label>2</Label>
+            </StackPanel>
+            <ListBox x:Name="ItemListBox" AllowDrop="True" Tag="{DynamicResource MLCRenderScale}">
+                <ListBox.Resources>
+                    <Style TargetType="TextBox" BasedOn="{StaticResource MLCTemplate}">
+                        <Setter Property="FontSize" Value="{Binding Path=Tag, RelativeSource={RelativeSource FindAncestor, AncestorType={x:Type ListBox}}}"/>
+                        <Setter Property="DockPanel.Dock" Value="Right"/>
+                    </Style>
+                    <Style TargetType="DockPanel">
+                        <Setter Property="LastChildFill" Value="False"/>
+                    </Style>
+                </ListBox.Resources>
+                <ListBoxItem Background="{StaticResource TopHalf}" HorizontalContentAlignment="Stretch">
+                    <DockPanel>
+                        <Label>CP1</Label>
+                        <TextBox>
+                            <TextBox.Tag>
+                                <x:Array Type="{x:Type System:Double}">
+                                    <System:Double>-10</System:Double>
+                                    <System:Double>10</System:Double>
+                                    <System:Double>-5</System:Double>
+                                    <System:Double>5</System:Double>
+                                </x:Array>
+                            </TextBox.Tag>
+                            -20,-20 0,-20 0,-19 -20,-19 10,-19 10,-18 -20,-18 -10,-18 -10,-17 -20,-17 -20,-20 20,-20 16,-20 16,-19 20,-19 16,-19 16,-18 20,-18 10,-18 10,-17 20,-17 20,-20
+                        </TextBox>
+                    </DockPanel>
+                </ListBoxItem>
+                <ListBoxItem Background="{DynamicResource BottomHalf}"
+                             Content="Beam_2 [10MV T0 G179-181]" />
+                <ListBoxItem Background="{DynamicResource WhiteTransparent}"
+                             Content="Beam_3 [10MV T0 G179-181]" />
+            </ListBox>
+        </StackPanel>
+        <StackPanel Orientation="Horizontal" HorizontalAlignment="Center">
+            <Button IsCancel="True" Content="_Cancel"/>
+            <Button x:Name="BtnOK" IsDefault="True" Content="_OK" />
+        </StackPanel>
+    </StackPanel>
+</Window>
+    """
     MLCStyleTemplate = None # Style template for mlc "TextBox" (renders MLCs)
 
     def __init__(self, list_in, results):
         self._beam = list_in
 
-        segments = self._beam.Segments
+        segments = MakeMockery('Segments', self._beam)
         super().__init__(segments, results)
         self.MLCStyleTemplate = self.window.FindResource("MLCTemplate")
         self.Resources["MLCRenderScale"] = self.calc_mlc_scale(segments)
 
     @staticmethod
     def calc_mlc_scale(segments):
-        jaw_extremes = [(min(j), max(j)) for j in
-                        zip(*[s.JawPositions for s in segments])]
+        MARGIN = 1
+        HALF_WIDTH = 20.
+        jaw_extreme = max(max(map(abs, j)) for j in
+                          zip(*[s.JawPositions for s in segments]))
 
-        # Scale to 2 cm beyond the largest jaw position
-        scale = 20. / (max([j[1] for j in jaw_extremes]) + 2)
+        # Scale to just beyond the largest jaw position (based on MARGIN)
+        scale = HALF_WIDTH / (jaw_extreme + MARGIN)
         return scale
 
     @staticmethod
@@ -1136,9 +1312,6 @@ class SegmentReorderDialog(GenericReorderDialog):
                           (lp_bank1, lcp - lwidth/2),
                           (lp_bank1, lcp + lwidth/2),
                           (lp_bank1 + LEAF_LEN, lcp + lwidth/2)]
-
-        #bot_b0 = (-20, pts_bank0[0][1])
-        #bot_b1 = (20, pts_bank1[0][1])
 
         bot_b0 = (-20, 20)
         top_b0 = (-20, -20)
@@ -1177,9 +1350,7 @@ class SegmentReorderDialog(GenericReorderDialog):
 
         mlc_tb = TextBox()
 
-        # mlc_tb.Tag = jp for jp in segment.JawPositions
         mlc_tb.Tag = SystemArray[SystemDouble](segment.JawPositions)
-        #mlc_tb.Tag = SystemArray[SystemDouble]([-20, 20, -20, 20])
         mlc_tb.Text = f'{mlc_points}'
 
         mlc_TT = ToolTip()
@@ -1191,21 +1362,19 @@ class SegmentReorderDialog(GenericReorderDialog):
         mlc_TT_tb.Width = mlc_TT_tb.Height = 200
 
         mlc_TT_tb.Style = self.window.FindResource("MLCTemplate")
-        #mlc_TT.Content = self.CloneUsingImage(mlc_tb, 192, 100, 100)
         mlc_TT.Content = mlc_TT_tb
         
-        _logger.debug(f'{self.window.FindResource("MLCTemplate")=}')
         mlc_tb.ToolTip = mlc_TT
-
-        # mlc_tb.Style = self.MLCStyleTemplate
 
         dp.Children.Add(mlc_tb)
 
         return lbi
 
     def do_reorder(self):
-        pass
-
+        for i, (seg_out, item) in zip(self._beam.Segments,
+                                      self.ItemList.Items):
+            seg_in = self._list_in[item.Tag]
+            seg_in.CopyTo(seg_out)
 
 
 def obj_name(obj, name_identifier_object='.', strict=False):
