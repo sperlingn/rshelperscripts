@@ -1,8 +1,28 @@
 from typing import List, Tuple, get_type_hints
 from random import choice, randint, uniform
 from copy import deepcopy
+from logging import getLogger
+from collections.abc import Sequence
+_logger = getLogger(__name__)
 
-from .external import DateTime
+try:
+    from System import DateTime as _datetime
+
+    class dt_pickle(DateTime):
+        def __reduce_ex__(self, version):
+            return (self.FromBinary, (self.ToBinary(),))
+
+except ImportError:
+    from datetime import datetime as _datetime
+
+    class DateTime(_datetime):
+        @property
+        def Now(self):
+            return self.now()
+
+    dt_pickle = DateTime
+
+    del _datetime
 
 
 def build_mock_string(obj):
@@ -18,7 +38,7 @@ def build_mock_string(obj):
         print(outstr)
 
 
-def obj_from_attr(attr_type, attr_name=''):
+def rand_from_hint(attr_type, attr_name=''):
     # Build an object from an attribute type.
     # Right now only handle List, Tuple, and proper types
     # TODO: When moving to Python 3.9+ we can use hinting to also
@@ -43,7 +63,7 @@ def obj_from_attr(attr_type, attr_name=''):
         attr_type_n = getattr(attr_type, '_name', None)
         argslist = getattr(attr_type, '__args__', None)
         if attr_type_n in TYPE_MAP and argslist:
-            return TYPE_MAP[attr_type_n](obj_from_attr(attr)
+            return TYPE_MAP[attr_type_n](rand_from_hint(attr)
                                          for attr in argslist)
 
 
@@ -90,7 +110,7 @@ def MakeMockery(root, attr, from_sequence=False):
 
     # First, find builtins that aren't mutable types can just be copied
     if cls.__module__ in ('builtins', '__builtins__', '__builtin__'):
-        if not issubclass(val, collections.abc.Sequence):
+        if not issubclass(cls, Sequence):
             # Not a sequence, is builtin, should be safe to just use.
             return val
 
@@ -103,28 +123,73 @@ def MakeMockery(root, attr, from_sequence=False):
         if cls in (dict):
             return {k: MakeMockery(v, k, True) for k, v in val.items()}
 
+    # Other objects known to be okay to return a direct copy of
+    if cls.__name__ in ('DateTime', 'Color'):
+        return val
+
     if isinstance(val, MockObject):
         return deepcopy(val)
+
+    if cls.__module__ in ('connect.connect_cpython'):
+        if cls.__name__ in ('array_list',
+                            'PyScriptObjectCollection'):
+            return [MakeMockery(v, attr, True) for v in val]
+        elif cls.__name__ in ('ExpandoDictionary'):
+            return {k: MakeMockery(v, k, True) for k, v in val.items()}
+
+    if cls.__name__ in ('numpy.ndarray'):
+        return val.tolist()
 
     if attr in _MOCKERY_MAPPINGS:
         return _MOCKERY_MAPPINGS[attr](val)
 
-    raise ValueError("Unable to translate '{val}' to a MockObject.")
+    raise ValueError(f"Unable to translate attribute {attr} of class "
+                     f"'{val.__class__}' and value '{val}' to a MockObject.")
 
 
-class MockObject(object):
+class MetaSlotsFromHints(type):
+    def __new__(metacls, name, bases, dct):
+        hints = dct.get('__annotations__', {}).keys()
+        slots = set(dct.get('__slots__', ()))
+        slots |= hints
+
+        # Exclude any class variables from slots.
+        slots -= dct.keys()
+
+        # Allow dict if we haven't defined any hints.
+        if not hints:
+            slots.add('__dict__')
+        dct['__slots__'] = tuple(slots)
+        return super().__new__(metacls, name, bases, dct)
+
+
+class MockObject(object, metaclass=MetaSlotsFromHints):
     # Mock object class which can be subclassed
     # If there are no type hints set, then the getattr function will
     # create the attribute requested and assign it a new MockObject.
     # Otherwise, the getattr function will perform normally.
+    _COPY_ONLY: set = None
+    _COPY_EXCLUDE: set = None
+
     def __init__(self, *args, **kwargs):
         hints = get_type_hints(self.__class__)
         if hints is None:
             hints = {k: None for k in kwargs}
-        known_keys = hints.keys()
-        for attr in known_keys:
+
+        known_keys = {key for key in hints if key[0] != '_'}
+
+        if len(args) == 1:
+            # Don't retain build fake values if we were passed an argument,
+            #  instead assume that we copy it and end.
+            return self.CopyFrom(args[0])
+        elif len(args) > 1:
+            raise ValueError("Can only accept up to 1 non-keyword argument.")
+
+        # Don't set any defaults for anything passed as a kwarg
+        for attr in known_keys - kwargs.keys():
             attr_type = hints[attr]
-            setattr(self, attr, obj_from_attr(attr_type, attr))
+            val = rand_from_hint(attr_type, attr)
+            setattr(self, attr, val)
 
         # Set values from keys passed in kwargs.
         if kwargs:
@@ -134,40 +199,18 @@ class MockObject(object):
                                  "support the following passed attributes: "
                                  f"'{excess_keys}'")
 
-            self.__dict__.update({k: kwargs[k]
-                                  for k in known_keys & kwargs.keys()})
+            for attr, val in ((k, kwargs[k]) for k
+                             in known_keys & kwargs.keys()):
+                setattr(self, attr, val)
 
-        for arg in args:
-            try:
-                keys = vars(arg).keys()
-                self.__dict__.update({k: clone_or_get(arg, k)
-                                      for k in known_keys & keys})
-            except (ValueError, AttributeError, TypeError):
-                pass
-
-    def __setattr__(self, attr, val):
-        hints = get_type_hints(self.__class__)
-        if not hints or attr in hints:
-            super().__setattr__(attr, val)
-        else:
-            raise AttributeError(f"{attr} not a valid attribute "
-                                 f" for {self.__class__} object")
-
-    def __getattr__(self, attr):
-        hints = get_type_hints(self.__class__)
-        if attr in ['__annotations__', '__wrapped__']:
-            return super().getattr(attr)
-        if not hints:
-            setattr(self, attr, MockObject())
-        elif attr in hints:
-            return getattr(self, attr)
-        else:
-            raise AttributeError(f"'{self.__class__.__name__}' object has no"
-                                 f" attribute '{attr}'")
 
     def __str__(self, depth=1):
         lines = []
-        for var, val in vars(self).items():
+        my_items = {attr: getattr(self, attr) for attr in self.__slots__
+                    if attr[0] != '_'}
+        my_items.update(getattr(self, '__dict__', {}))
+
+        for var, val in my_items.items():
             line = '\t'*depth + f'{var} = '
             if isinstance(val, MockObject):
                 line += val.__str__(depth+1)
@@ -198,6 +241,54 @@ class MockObject(object):
         # Run at the end of init.
         pass
 
+    def CopyFrom(self, other):
+        hints = get_type_hints(self.__class__)
+        known_keys = {key for key in hints if key[0] != '_'}
+        try:
+            keys = set(dir(other))
+
+            for attr, val in ((k, MakeMockery(other, k))
+                             for k in known_keys & keys):
+                setattr(self, attr, val)
+        except (ValueError, AttributeError, TypeError) as e:
+            _logger.debug(f"Couldn't clone: {e}", exc_info=True)
+
+    def CopyTo(self, other):
+        # Copies values in self to other if keys exist in both.
+        # If self has _COPY_ONLY set, this will only copy those attributes,
+        # otherwise, it will copy all type hinted parameters EXCEPT those
+        # list in _COPY_EXCLUDE.
+        hints = get_type_hints(self)
+        attrs = set(self._COPY_ONLY if self._COPY_ONLY else hints.keys())
+        attrs -= set(self._COPY_EXCLUDE)
+
+        for attr, val in [(attr, getattr(self, attr)) for attr in attrs
+                          if attr[0] != '_'
+                          and hasattr(other, attr) 
+                          and not callable(getattr(other, attr))]:
+            try:
+                setattr(other, attr, val)
+            except (TypeError, ValueError):
+                _logger.debug(f"Couldn't set value of attribute '{attr}' to "
+                              f"'{val}' on '{other}'", exc_info=True)
+
+    def __reduce_ex__(self, version):
+        # Hack to allow us to use deepcopy which uses protocol version 4
+        out = super().__reduce_ex__(version)
+        if version == 4:
+            # Currently deepcopy uses version 4, we need to translate some
+            #  objects which do not support pickling such as DateTime
+            c_fn, bases, dictandslots, *rest = out
+            for indict in dictandslots:
+                if indict is not None:
+                    for val in indict.values():
+                        if isinstance(val, DateTime):
+                            val.__class__ = dt_pickle
+
+            out = (c_fn, bases, dictandslots, *rest)
+        return out
+
+
 
 class MockOrganData(MockObject):
     OrganType: str
@@ -206,7 +297,7 @@ class MockOrganData(MockObject):
 
 
 class MockStructure(MockObject):
-    Name: str  # Wait for Py 3.10 for typing
+    Name: str
     OrganData: MockOrganData
 
     def __init__(self, name='ROI_1', roitype='Unknown'):
@@ -215,8 +306,8 @@ class MockStructure(MockObject):
 
 
 class MockPrescriptionDoseReference(MockObject):
-    DoseValue: float  # Wait for Py 3.10 for typing
-    OnStructure: MockStructure  # Wait for Py 3.10 for typing
+    DoseValue: float
+    OnStructure: MockStructure
 
     def __init__(self, roi=None, dosevalue=1000):
         super().__init__(DoseValue=dosevalue,
@@ -245,14 +336,22 @@ class MockPatientModel(MockObject):
     RegionsOfInterest: List[MockStructure]
 
 
+class MockCollisionProperties(MockObject):
+    ForPatientModel: MockPatientModel
+
+
+class MockPatientSetup(MockObject):
+    CollisionProperties: MockCollisionProperties
+
+
 class MockBeamSet(MockObject):
     Prescription: MockPrescription
     FractionDose: MockFractionDose
-    PatientSetup: MockObject
+    PatientSetup: MockPatientSetup
     Name: str
 
-    def __init__(self, name='BeamSet1', pdrlist=None,
-                 pm: MockPatientModel = None):
+    def __init__(self, *args, name='BeamSet1', pdrlist=None,
+                 pm: MockPatientModel = None, **kwargs):
 
         super().__init__(Name=name,
                          Prescription=MockPrescription(pdrlist))
@@ -447,9 +546,8 @@ class MockPlan(MockObject):
     BeamSets: List[MockBeamSet]
     DicomPlanLabel: str
 
-    def __init__(self, name="Plan1"):
-        super().__init__(BeamSets=[],
-                         DicomPlanLabel=f'{name}')
+    def __init__(self, *args, name="Plan1", **kwargs):
+        super().__init__(*args, DicomPlanLabel=f'{name}', **kwargs)
 
     def __enforce_rules__(self):
         # Make beamset names unique, build beamset getter
@@ -464,8 +562,11 @@ class MockCase(MockObject):
     CaseName: str
     PerPatientUniqueId: str
 
-    def __init__(self, plans=None):
-        super().__init__(TreatmentPlans=plans if plans else [])
+    def __init__(self, *args, plans=None, **kwargs):
+        if plans is not None:
+            super().__init__(*args, TreatmentPlans=plans, **kwargs)
+        else:
+            super().__init__(*args, **kwargs)
 
     def __enforce_rules__(self):
         # Make sure plan names are unique
@@ -481,8 +582,10 @@ class MockPatient(MockObject):
     PatientID: str
     Cases: List[MockCase]
 
-    def __init__(self, name=None, id=None, dob=None, gender=None, cases=None):
-        kwargs = {'Gender': gender if gender else choice(['Male', 'Female']),
+    def __init__(self, *args,
+                 name=None, id=None, dob=None, gender=None, cases=None,
+                 **kwargs):
+        n_args = {'Gender': gender if gender else choice(['Male', 'Female']),
                   'PatientID': id if id else f'99{randint(0,1e6):6d}',
                   'DateOfBirth': dob if dob else DateTime(randint(1920, 2010),
                                                           randint(1, 12),
@@ -493,14 +596,20 @@ class MockPatient(MockObject):
                                                     'BAGGINS^FRODO',
                                                     'GAMGEE^SAMWISE',
                                                     'EVENSTAR^ARWEN',
-                                                    'FINWE^GALADRIEL']),
-                  'Cases': cases if cases else []}
-        super().__init__(**kwargs)
+                                                    'FINWE^GALADRIEL'])}
+        kwargs.update(n_args)
+        if cases is not None:
+            kwargs['Cases'] = cases
+        super().__init__(*args, **kwargs)
 
 _MOCKERY_MAPPINGS.update({
     'OnStructure': MockStructure,
     'Patient': MockPatient,
     'Cases': MockCase,
     'BeamSets': MockBeamSet,
-    'Segments': MockSegment
+    'Segments': MockSegment,
+    'UpperLayer': MockLayer,
+    'Isocenter': MockIsocenter,
+    'Fluence': MockFluence,
+    'Annotation': MockAnnotation
     })
