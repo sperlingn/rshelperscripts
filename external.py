@@ -6,6 +6,7 @@ from uuid import uuid4
 from dataclasses import dataclass
 from collections.abc import MutableMapping
 from typing import Type
+from .mock_objects import MakeMockery
 _logger = _logging.getLogger(__name__)
 
 
@@ -29,7 +30,9 @@ try:
     from System.Windows.Media import (VisualBrush, Brushes, VisualTreeHelper,
                                       PixelFormats, DrawingVisual)
     from System.Windows.Media.Imaging import RenderTargetBitmap
-    from System import Double as SystemDouble, Array as SystemArray, DateTime
+    from System import (Double as SystemDouble,  # noqa: W0611
+                        Array as SystemArray,
+                        DateTime)
     from System import ArgumentOutOfRangeException, InvalidOperationException
     from System.IO import InvalidDataException
     from System.Windows.Input import Keyboard, ModifierKeys, MouseButtonState
@@ -444,19 +447,19 @@ def set_module_opts(**kwargs):
 
 
 def StaticMWHandler_IncDecScroll(caller, event):
-        try:
-            scale = ValScale.get(Keyboard.Modifiers, 1)
-            valdelta = int(event.Delta * scale / 120.)
+    try:
+        scale = ValScale.get(Keyboard.Modifiers, 1)
+        valdelta = int(event.Delta * scale / 120.)
 
-            if hasattr(caller, "Value"):
-                caller.Value += valdelta
-            elif hasattr(caller, "Text"):
-                caller.Text = '%d' % (int(caller.Text) + valdelta)
+        if hasattr(caller, "Value"):
+            caller.Value += valdelta
+        elif hasattr(caller, "Text"):
+            caller.Text = '%d' % (int(caller.Text) + valdelta)
 
-        except ValueError:
-            pass
-        except Exception as ex:
-            _logger.exception(ex)
+    except ValueError:
+        pass
+    except Exception as ex:
+        _logger.exception(ex)
 
 
 class ListItemPanel(DockPanel):
@@ -760,7 +763,7 @@ class GenericReorderDialog(RayWindow):
         ddw.Topmost = True
         ddw.ShowInTaskbar = False
 
-        #r = self.CloneUsingXAML(caller)
+        # r = self.CloneUsingXAML(caller)
         r = self.CloneUsingImage(caller)
 
         ddw.Content = r
@@ -773,11 +776,13 @@ class GenericReorderDialog(RayWindow):
         _logger.debug(f"{ddw=} {cursor_pos=}")
 
     @staticmethod
-    def CloneUsingImage(uielement, dpi = 96, width = None, height = None):
+    def CloneUsingImage(uielement, dpi=96, width=None, height=None):
         bounds = VisualTreeHelper.GetDescendantBounds(uielement)
         rtb_scale = dpi / 96.0
-        width = width if width else int((bounds.Width + bounds.X) * rtb_scale)
-        height = height if height else int((bounds.Height + bounds.X) * rtb_scale)
+        width = width if width else int((bounds.Width + bounds.X)
+                                        * rtb_scale)
+        height = height if height else int((bounds.Height + bounds.X)
+                                           * rtb_scale)
         rtb_args = (int(width),
                     int(height),
                     dpi,
@@ -793,7 +798,7 @@ class GenericReorderDialog(RayWindow):
         ctx.Close()
         renderTargetBitmap.Render(dv)
 
-        #renderTargetBitmap.Render(uielement)
+        # renderTargetBitmap.Render(uielement)
 
         img = Image()
         img.Width = width / rtb_scale
@@ -904,7 +909,8 @@ class GenericReorderDialog(RayWindow):
         # Reset the style of the drug beam name when the left mouse is
         # releaesed, do not mark as handled so normal handling finishes the
         # rest of the drop
-        if not (event.KeyStates & DragDropKeyStates.LeftMouseButton) == DragDropKeyStates.LeftMouseButton:
+        if not ((event.KeyStates & DragDropKeyStates.LeftMouseButton)
+                == DragDropKeyStates.LeftMouseButton):
             _logger.debug(f"Stopping drag {event.KeyStates=}")
             # Left click released, this was a drop event.
             if isinstance(caller, ListBoxItem):
@@ -915,8 +921,8 @@ class GenericReorderDialog(RayWindow):
                 self._dragdropwindow = None
 
     def do_reorder(self):
-        raise NotImplemenetedError(f"{self.__class__.__name__} must "
-                                   "implement do_reorder")
+        raise NotImplementedError(f"{self.__class__.__name__} must "
+                                  "implement do_reorder")
 
     def OK_Click(self, caller, event):
         try:
@@ -1025,8 +1031,8 @@ class BeamReorderDialog(GenericReorderDialog):
         lbi = ListBoxItem()
 
         beam_desc = (f"{beam.BeamQualityId}MV "
-                        f"T{beam.CouchRotationAngle:0.0f} "
-                        f"G{beam.GantryAngle:0.0f}")
+                     f"T{beam.CouchRotationAngle:0.0f} "
+                     f"G{beam.GantryAngle:0.0f}")
 
         if beam.ArcStopGantryAngle is not None:
             beam_desc += f"-{beam.ArcStopGantryAngle:0.0f}"
@@ -1049,15 +1055,15 @@ class BeamReorderDialog(GenericReorderDialog):
 
             if beam.InitialJawPositions is not None:
                 tt = (f"X1: {beam.InitialJawPositions[0]:0.1f}\n"
-                        f"X2: {beam.InitialJawPositions[1]:0.1f}\n"
-                        f"Y1: {beam.InitialJawPositions[2]:0.1f}\n"
-                        f"Y2: {beam.InitialJawPositions[3]:0.1f}")
+                      f"X2: {beam.InitialJawPositions[1]:0.1f}\n"
+                      f"Y1: {beam.InitialJawPositions[2]:0.1f}\n"
+                      f"Y2: {beam.InitialJawPositions[3]:0.1f}")
             else:
                 tt = ("Segment 1 Jaw:\n"
-                        f"X1: {beam.Segments[0].JawPositions[0]:0.1f}\n"
-                        f"X2: {beam.Segments[0].JawPositions[1]:0.1f}\n"
-                        f"Y1: {beam.Segments[0].JawPositions[2]:0.1f}\n"
-                        f"Y2: {beam.Segments[0].JawPositions[3]:0.1f}")
+                      f"X1: {beam.Segments[0].JawPositions[0]:0.1f}\n"
+                      f"X2: {beam.Segments[0].JawPositions[1]:0.1f}\n"
+                      f"Y1: {beam.Segments[0].JawPositions[2]:0.1f}\n"
+                      f"Y2: {beam.Segments[0].JawPositions[3]:0.1f}")
 
             lbi.ToolTip = tt
         except (ValueError, TypeError, AttributeError,
@@ -1143,74 +1149,86 @@ class SegmentReorderDialog(GenericReorderDialog):
         </LinearGradientBrush>
         <SolidColorBrush x:Key="WhiteTransparent" Color="#7FFFFFFF"/>
         <Style x:Key="MLCTemplate" TargetType="{x:Type TextBox}">
-            <!--<Setter Property="FontSize" Value="{Binding Path=Tag, RelativeSource={RelativeSource FindAncestor, AncestorType={x:Type ListBox}}}"/>-->
             <Setter Property="Template">
                 <Setter.Value>
-                    <ControlTemplate TargetType="{x:Type TextBox}">
-                        <Border Background="White" BorderBrush="Black" BorderThickness="1">
-                            <Viewbox Width="{TemplateBinding Width}" Height="{TemplateBinding Height}" ClipToBounds="True">
-                            <Canvas Width="40" Height="40" Background="White" RenderTransformOrigin="0.5,0.5">
-                                <Canvas.RenderTransform>
-                                    <TransformGroup>
-                                        <ScaleTransform ScaleX="{Binding RelativeSource={RelativeSource TemplatedParent}, Path=FontSize}"
-                                                        ScaleY="{Binding RelativeSource={RelativeSource TemplatedParent}, Path=FontSize}"/>
-                                        <SkewTransform/>
-                                        <RotateTransform/>
-                                        <TranslateTransform/>
-                                    </TransformGroup>
-                                </Canvas.RenderTransform>
-                                <TextBlock x:Name="TemplateJawsPoints" Visibility="Collapsed" >
-                                    <TextBlock.Text>
-                                        <MultiBinding StringFormat="{}{0},{3} {1},{3} {1},{2} {0},{2} {0},{3}">
-                                            <Binding RelativeSource="{RelativeSource TemplatedParent}" Path="Tag[0]"/>
-                                            <Binding RelativeSource="{RelativeSource TemplatedParent}" Path="Tag[1]"/>
-                                            <Binding RelativeSource="{RelativeSource TemplatedParent}" Path="Tag[2]"/>
-                                            <Binding RelativeSource="{RelativeSource TemplatedParent}" Path="Tag[3]"/>
-                                        </MultiBinding>
-                                    </TextBlock.Text>
-                                </TextBlock>
-                                <Rectangle Width="40" Height="40" Panel.ZIndex="1">
-                                    <Rectangle.Fill>
-                                        <SolidColorBrush Color="#FF5EB6FF" Opacity="0.8"/>
-                                    </Rectangle.Fill>
-                                    <Rectangle.Clip>
-                                        <GeometryGroup>
-                                            <RectangleGeometry Rect="0,0,40,40"/>
-                                            <PathGeometry>
-                                                <PathGeometry.Figures>
-                                                    <PathFigure IsClosed="True">
-                                                        <PolyLineSegment Points="{Binding Text, ElementName=TemplateJawsPoints}" />
-                                                    </PathFigure>
-                                                </PathGeometry.Figures>
-                                                <PathGeometry.Transform>
-                                                    <TransformGroup>
-                                                        <TranslateTransform X="20" Y="20"/>
-                                                    </TransformGroup>
-                                                </PathGeometry.Transform>
-                                            </PathGeometry>
-                                        </GeometryGroup>
-                                    </Rectangle.Clip>
-                                </Rectangle>
-                                <Polygon Fill="#FF005DFF" Canvas.Left="20" Canvas.Top="20" Points="{Binding Text, RelativeSource={RelativeSource TemplatedParent}}" Stroke="#FF80C5FF" StrokeThickness="0.2" StrokeLineJoin="Bevel">
-                                        <Polygon.RenderTransform>
-                                            <TransformGroup>
-                                                <ScaleTransform ScaleY="-1" ScaleX="1"/>
-                                                <SkewTransform AngleY="0" AngleX="0"/>
-                                                <RotateTransform Angle="0"/>
-                                                <TranslateTransform/>
-                                            </TransformGroup>
-                                        </Polygon.RenderTransform>
-                                    </Polygon>
-                                <Path x:Name="Crosshair" Canvas.Left="20" Canvas.Top="20" Stroke="Blue" StrokeThickness="0.1"
-                                    Data="M 0,-20 v40 M -20,0 h40
-                                      M-1,-20 h2 m-2,5 h2 m-2,5 h2 m-2,5 h2 m-2,10 h2 m-2,5 h2 m-2,5 h2 m-2,5 h2
-                                      M-20,-1 v2 m5,-2 v2 m5,-2 v2 m5,-2 v2 m10,-2 v2 m5,-2 v2 m5,-2 v2 m5,-2 v2
-                                      M-.5,-19 h1 m-1,1 h1 m-1,1 h1 m-1,1 h1 m-1,2 h1 m-1,1 h1 m-1,1 h1 m-1,1 h1 m-1,2 h1 m-1,1 h1 m-1,1 h1 m-1,1 h1 m-1,2 h1 m-1,1 h1 m-1,1 h1 m-1,1 h1 m-1,2 h1 m-1,1 h1 m-1,1 h1 m-1,1 h1 m-1,2 h1 m-1,1 h1 m-1,1 h1 m-1,1 h1 m-1,2 h1 m-1,1 h1 m-1,1 h1 m-1,1 h1 m-1,2 h1 m-1,1 h1 m-1,1 h1 m-1,1 h1
-                                      M-19,-.5 v1 m1,-1 v1 m1,-1 v1 m1,-1 v1 m2,-1 v1 m1,-1 v1 m1,-1 v1 m1,-1 v1 m2,-1 v1 m1,-1 v1 m1,-1 v1 m1,-1 v1 m2,-1 v1 m1,-1 v1 m1,-1 v1 m1,-1 v1 m2,-1 v1 m1,-1 v1 m1,-1 v1 m1,-1 v1 m2,-1 v1 m1,-1 v1 m1,-1 v1 m1,-1 v1 m2,-1 v1 m1,-1 v1 m1,-1 v1 m1,-1 v1 m2,-1 v1 m1,-1 v1 m1,-1 v1 m1,-1 v1"/>
-                            </Canvas>
-                        </Viewbox>
-                        </Border>
-                    </ControlTemplate>
+<ControlTemplate TargetType="{x:Type TextBox}">
+    <Border Background="White" BorderBrush="Black" BorderThickness="1">
+        <Viewbox Width="{TemplateBinding Width}"
+                Height="{TemplateBinding Height}" ClipToBounds="True">
+        <Canvas Width="40" Height="40" Background="White"
+                RenderTransformOrigin="0.5,0.5">
+            <Canvas.RenderTransform>
+                <TransformGroup>
+                    <ScaleTransform ScaleX="{Binding
+    RelativeSource={RelativeSource TemplatedParent}, Path=FontSize}"
+                                    ScaleY="{Binding
+    RelativeSource={RelativeSource TemplatedParent}, Path=FontSize}"/>
+                    <SkewTransform/>
+                    <RotateTransform/>
+                    <TranslateTransform/>
+                </TransformGroup>
+            </Canvas.RenderTransform>
+            <TextBlock x:Name="TemplateJawsPoints" Visibility="Collapsed" >
+                <TextBlock.Text>
+<MultiBinding StringFormat="{}{0},{3} {1},{3} {1},{2} {0},{2} {0},{3}">
+    <Binding RelativeSource="{RelativeSource TemplatedParent}" Path="Tag[0]"/>
+    <Binding RelativeSource="{RelativeSource TemplatedParent}" Path="Tag[1]"/>
+    <Binding RelativeSource="{RelativeSource TemplatedParent}" Path="Tag[2]"/>
+    <Binding RelativeSource="{RelativeSource TemplatedParent}" Path="Tag[3]"/>
+</MultiBinding>
+                </TextBlock.Text>
+            </TextBlock>
+            <Rectangle Width="40" Height="40" Panel.ZIndex="1">
+                <Rectangle.Fill>
+                    <SolidColorBrush Color="#FF5EB6FF" Opacity="0.8"/>
+                </Rectangle.Fill>
+                <Rectangle.Clip>
+<GeometryGroup>
+    <RectangleGeometry Rect="0,0,40,40"/>
+    <PathGeometry>
+        <PathGeometry.Figures>
+            <PathFigure IsClosed="True">
+                <PolyLineSegment Points="{Binding Text,
+                    ElementName=TemplateJawsPoints}" />
+            </PathFigure>
+        </PathGeometry.Figures>
+        <PathGeometry.Transform>
+            <TransformGroup>
+                <TranslateTransform X="20" Y="20"/>
+            </TransformGroup>
+        </PathGeometry.Transform>
+    </PathGeometry>
+</GeometryGroup>
+                </Rectangle.Clip>
+            </Rectangle>
+<Polygon Fill="#FF005DFF" Canvas.Left="20" Canvas.Top="20"
+       Points="{Binding Text, RelativeSource={RelativeSource TemplatedParent}}"
+       Stroke="#FF80C5FF" StrokeThickness="0.2" StrokeLineJoin="Bevel">
+    <Polygon.RenderTransform>
+        <TransformGroup>
+            <ScaleTransform ScaleY="-1" ScaleX="1"/>
+            <SkewTransform AngleY="0" AngleX="0"/>
+            <RotateTransform Angle="0"/>
+            <TranslateTransform/>
+        </TransformGroup>
+    </Polygon.RenderTransform>
+</Polygon>
+<Path x:Name="Crosshair" Canvas.Left="20" Canvas.Top="20" Stroke="Blue"
+      StrokeThickness="0.1" Data="M 0,-20 v40 M -20,0 h40
+M-1,-20 h2 m-2,5 h2 m-2,5 h2 m-2,5 h2 m-2,10 h2 m-2,5 h2 m-2,5 h2 m-2,5 h2
+M-20,-1 v2 m5,-2 v2 m5,-2 v2 m5,-2 v2 m10,-2 v2 m5,-2 v2 m5,-2 v2 m5,-2 v2
+M-.5,-19 h1 m-1,1 h1 m-1,1 h1 m-1,1 h1 m-1,2 h1 m-1,1 h1 m-1,1 h1 m-1,1 h1
+    m-1,2 h1 m-1,1 h1 m-1,1 h1 m-1,1 h1 m-1,2 h1 m-1,1 h1 m-1,1 h1 m-1,1 h1
+    m-1,2 h1 m-1,1 h1 m-1,1 h1 m-1,1 h1 m-1,2 h1 m-1,1 h1 m-1,1 h1 m-1,1 h1
+    m-1,2 h1 m-1,1 h1 m-1,1 h1 m-1,1 h1 m-1,2 h1 m-1,1 h1 m-1,1 h1 m-1,1 h1
+M-19,-.5 v1 m1,-1 v1 m1,-1 v1 m1,-1 v1 m2,-1 v1 m1,-1 v1 m1,-1 v1 m1,-1 v1
+    m2,-1 v1 m1,-1 v1 m1,-1 v1 m1,-1 v1 m2,-1 v1 m1,-1 v1 m1,-1 v1 m1,-1 v1
+    m2,-1 v1 m1,-1 v1 m1,-1 v1 m1,-1 v1 m2,-1 v1 m1,-1 v1 m1,-1 v1 m1,-1 v1
+    m2,-1 v1 m1,-1 v1 m1,-1 v1 m1,-1 v1 m2,-1 v1 m1,-1 v1 m1,-1 v1 m1,-1 v1"/>
+        </Canvas>
+    </Viewbox>
+    </Border>
+</ControlTemplate>
                 </Setter.Value>
             </Setter>
         </Style>
@@ -1230,36 +1248,20 @@ class SegmentReorderDialog(GenericReorderDialog):
                 <Label>1</Label>
                 <Label>2</Label>
             </StackPanel>
-            <ListBox x:Name="ItemListBox" AllowDrop="True" Tag="{DynamicResource MLCRenderScale}">
+            <ListBox x:Name="ItemListBox" AllowDrop="True"
+                     Tag="{DynamicResource MLCRenderScale}">
                 <ListBox.Resources>
-                    <Style TargetType="TextBox" BasedOn="{StaticResource MLCTemplate}">
-                        <Setter Property="FontSize" Value="{Binding Path=Tag, RelativeSource={RelativeSource FindAncestor, AncestorType={x:Type ListBox}}}"/>
+                    <Style TargetType="TextBox"
+                           BasedOn="{StaticResource MLCTemplate}">
+    <Setter Property="FontSize" Value="{Binding Path=Tag,
+        RelativeSource={RelativeSource FindAncestor,
+        AncestorType={x:Type ListBox}}}"/>
                         <Setter Property="DockPanel.Dock" Value="Right"/>
                     </Style>
                     <Style TargetType="DockPanel">
                         <Setter Property="LastChildFill" Value="False"/>
                     </Style>
                 </ListBox.Resources>
-                <ListBoxItem Background="{StaticResource TopHalf}" HorizontalContentAlignment="Stretch">
-                    <DockPanel>
-                        <Label>CP1</Label>
-                        <TextBox>
-                            <TextBox.Tag>
-                                <x:Array Type="{x:Type System:Double}">
-                                    <System:Double>-10</System:Double>
-                                    <System:Double>10</System:Double>
-                                    <System:Double>-5</System:Double>
-                                    <System:Double>5</System:Double>
-                                </x:Array>
-                            </TextBox.Tag>
-                            -20,-20 0,-20 0,-19 -20,-19 10,-19 10,-18 -20,-18 -10,-18 -10,-17 -20,-17 -20,-20 20,-20 16,-20 16,-19 20,-19 16,-19 16,-18 20,-18 10,-18 10,-17 20,-17 20,-20
-                        </TextBox>
-                    </DockPanel>
-                </ListBoxItem>
-                <ListBoxItem Background="{DynamicResource BottomHalf}"
-                             Content="Beam_2 [10MV T0 G179-181]" />
-                <ListBoxItem Background="{DynamicResource WhiteTransparent}"
-                             Content="Beam_3 [10MV T0 G179-181]" />
             </ListBox>
         </StackPanel>
         <StackPanel Orientation="Horizontal" HorizontalAlignment="Center">
@@ -1269,7 +1271,7 @@ class SegmentReorderDialog(GenericReorderDialog):
     </StackPanel>
 </Window>
     """
-    MLCStyleTemplate = None # Style template for mlc "TextBox" (renders MLCs)
+    MLCStyleTemplate = None  # Style template for mlc "TextBox" (renders MLCs)
 
     def __init__(self, list_in, results):
         self._beam = list_in
@@ -1363,7 +1365,7 @@ class SegmentReorderDialog(GenericReorderDialog):
 
         mlc_TT_tb.Style = self.window.FindResource("MLCTemplate")
         mlc_TT.Content = mlc_TT_tb
-        
+
         mlc_tb.ToolTip = mlc_TT
 
         dp.Children.Add(mlc_tb)
