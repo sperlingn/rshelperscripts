@@ -147,7 +147,7 @@ class ROI():
                        'SourceRoiName': obj_name(source_roi)}
         for exam in self._geometries:
             margin_opts['Examination'] = exam
-            self.CreateMarginGeometry(**margin_opts)
+            self._roi.CreateMarginGeometry(**margin_opts)
 
     def ab_subtraction(self, exam=None, rois_a=None, rois_b=None):
         self.ab_operation(exam, rois_a, rois_b, operation='Subtraction')
@@ -223,10 +223,10 @@ class ROI():
         for geom in self.geoms:
             geom.DeleteGeometry()
 
-    def Show(self, V2D='Contour', V3D='Shaded', DRR=True):
+    def Show(self, v2D='Contour', v3D='Shaded', DRR=True):
         vs = self._roi.RoiVisualizationSettings
-        vs.VisualizationMode3D = V2D
-        vs.VisualizationMode2D = V3D
+        vs.VisualizationMode2D = v2D
+        vs.VisualizationMode3D = v3D
         vs.ShowDRRContours = DRR
 
     def Hide(self):
