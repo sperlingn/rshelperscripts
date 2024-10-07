@@ -1,4 +1,4 @@
-from .external import get_current, LimitedDict
+from .external import get_current, LimitedDict, obj_name
 from .points import point
 import logging
 _logger = logging.getLogger(__name__)
@@ -144,7 +144,7 @@ class ROI():
     def marginate(self, source_roi, margin):
         margin_opts = {'Examination': None,
                        'MarginSettings': margin_settings(margin),
-                       'SourceRoiName': source_roi}
+                       'SourceRoiName': obj_name(source_roi)}
         for exam in self._geometries:
             margin_opts['Examination'] = exam
             self.CreateMarginGeometry(**margin_opts)
@@ -155,7 +155,8 @@ class ROI():
     def ab_intersect(self, exam=None, rois_a=None, rois_b=None):
         self.ab_operation(exam, rois_a, rois_b, operation='Intersection')
 
-    def ab_operation(self, exam, rois_a, rois_b, operation):
+    def ab_operation(self, exam, rois_a, rois_b, operation,
+                     rois_a_margin=0, rois_b_margin=0, margin=0):
         VALID_OPS = ['None',
                      'Union',
                      'Intersection',
@@ -175,18 +176,18 @@ class ROI():
 
         exp_a = {'Operation': 'Union',
                  'SourceRoiNames': rois_a,
-                 'MarginSettings': margin_settings(0)}
+                 'MarginSettings': margin_settings(rois_a_margin)}
 
         exp_b = {'Operation': 'Union',
                  'SourceRoiNames': rois_b,
-                 'MarginSettings': margin_settings(0)}
+                 'MarginSettings': margin_settings(rois_b_margin)}
 
         create_geom_opts = {'Examination': exam,
                             'Algorithm': 'Auto',
                             'ExpressionA': exp_a,
                             'ExpressionB': exp_b,
                             'ResultOperation': operation,
-                            'ResultMarginSettings': margin_settings(0)}
+                            'ResultMarginSettings': margin_settings(margin)}
 
         self._roi.CreateAlgebraGeometry(**create_geom_opts)
 
@@ -221,3 +222,12 @@ class ROI():
     def DeleteGeometry(self):
         for geom in self.geoms:
             geom.DeleteGeometry()
+
+    def Show(self, V2D='Contour', V3D='Shaded', DRR=True):
+        vs = self._roi.RoiVisualizationSettings
+        vs.VisualizationMode3D = V2D
+        vs.VisualizationMode2D = V3D
+        vs.ShowDRRContours = DRR
+
+    def Hide(self):
+        self.Show('Off', 'Off', False)
