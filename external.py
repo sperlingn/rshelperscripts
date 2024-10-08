@@ -6,6 +6,8 @@ from uuid import uuid4
 from dataclasses import dataclass
 from collections.abc import MutableMapping
 from typing import Type
+from zlib import decompress as zlibdecompress
+from base64 import b64decode
 from .mock_objects import MakeMockery
 _logger = _logging.getLogger(__name__)
 
@@ -25,7 +27,8 @@ try:
                                 SizeToContent, Window, Visibility, Rect,
                                 DragDrop, DragDropEffects, DragDropKeyStates)
     from System.Windows.Controls import (Button, TextBlock, DockPanel, Label,
-                                         ListBoxItem, TextBox, Image, ToolTip)
+                                         ListBoxItem, TextBox, Image, ToolTip,
+                                         Slider, Dock, Orientation)
     from System.Windows.Shapes import Rectangle
     from System.Windows.Media import (VisualBrush, Brushes, VisualTreeHelper,
                                       PixelFormats, DrawingVisual)
@@ -614,6 +617,247 @@ class ListSelectorDialog(RayWindow):
             self.Close()
 
 
+class MLCRenderTextBox(TextBox):
+    StyleXAML = """
+    <ResourceDictionary xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation">
+        <Style x:Key="MLCTemplate" TargetType="{x:Type TextBox}">
+            <Setter Property="Template">
+                <Setter.Value>
+<ControlTemplate TargetType="{x:Type TextBox}">
+    <Border Background="White" BorderBrush="Black" BorderThickness="1">
+        <Viewbox Width="{TemplateBinding Width}"
+                Height="{TemplateBinding Height}" ClipToBounds="True">
+        <Canvas Width="40" Height="40" Background="White"
+                RenderTransformOrigin="0.5,0.5">
+            <Canvas.RenderTransform>
+                <TransformGroup>
+                    <ScaleTransform ScaleX="{Binding
+    RelativeSource={RelativeSource TemplatedParent}, Path=FontSize}"
+                                    ScaleY="{Binding
+    RelativeSource={RelativeSource TemplatedParent}, Path=FontSize}"/>
+                    <SkewTransform/>
+                    <RotateTransform/>
+                    <TranslateTransform/>
+                </TransformGroup>
+            </Canvas.RenderTransform>
+            <TextBlock x:Name="TemplateJawsPoints" Visibility="Collapsed" >
+                <TextBlock.Text>
+<MultiBinding StringFormat="{}{0},{3} {1},{3} {1},{2} {0},{2} {0},{3}">
+    <Binding RelativeSource="{RelativeSource TemplatedParent}" Path="Tag[0]"/>
+    <Binding RelativeSource="{RelativeSource TemplatedParent}" Path="Tag[1]"/>
+    <Binding RelativeSource="{RelativeSource TemplatedParent}" Path="Tag[2]"/>
+    <Binding RelativeSource="{RelativeSource TemplatedParent}" Path="Tag[3]"/>
+</MultiBinding>
+                </TextBlock.Text>
+            </TextBlock>
+            <Rectangle Width="40" Height="40" Panel.ZIndex="1">
+                <Rectangle.Fill>
+                    <SolidColorBrush Color="#FF5EB6FF" Opacity="0.8"/>
+                </Rectangle.Fill>
+                <Rectangle.Clip>
+<GeometryGroup>
+    <RectangleGeometry Rect="0,0,40,40"/>
+    <PathGeometry>
+        <PathGeometry.Figures>
+            <PathFigure IsClosed="True">
+                <PolyLineSegment Points="{Binding Text,
+                    ElementName=TemplateJawsPoints}" />
+            </PathFigure>
+        </PathGeometry.Figures>
+        <PathGeometry.Transform>
+            <TransformGroup>
+                <ScaleTransform ScaleY="-1" ScaleX="1"/>
+                <TranslateTransform X="20" Y="20"/>
+            </TransformGroup>
+        </PathGeometry.Transform>
+    </PathGeometry>
+</GeometryGroup>
+                </Rectangle.Clip>
+            </Rectangle>
+<Polygon Fill="#FF005DFF" Canvas.Left="20" Canvas.Top="20"
+       Points="{Binding Text, RelativeSource={RelativeSource TemplatedParent}}"
+       Stroke="#FF80C5FF" StrokeThickness="0.2" StrokeLineJoin="Bevel">
+    <Polygon.RenderTransform>
+        <TransformGroup>
+            <ScaleTransform ScaleY="-1" ScaleX="1"/>
+            <SkewTransform AngleY="0" AngleX="0"/>
+            <RotateTransform Angle="0"/>
+            <TranslateTransform/>
+        </TransformGroup>
+    </Polygon.RenderTransform>
+</Polygon>
+<Path x:Name="Crosshair" Canvas.Left="20" Canvas.Top="20" Stroke="Blue"
+      StrokeThickness="0.1" Data="M 0,-20 v40 M -20,0 h40
+M-1,-20 h2 m-2,5 h2 m-2,5 h2 m-2,5 h2 m-2,10 h2 m-2,5 h2 m-2,5 h2 m-2,5 h2
+M-20,-1 v2 m5,-2 v2 m5,-2 v2 m5,-2 v2 m10,-2 v2 m5,-2 v2 m5,-2 v2 m5,-2 v2
+M-.5,-19 h1 m-1,1 h1 m-1,1 h1 m-1,1 h1 m-1,2 h1 m-1,1 h1 m-1,1 h1 m-1,1 h1
+    m-1,2 h1 m-1,1 h1 m-1,1 h1 m-1,1 h1 m-1,2 h1 m-1,1 h1 m-1,1 h1 m-1,1 h1
+    m-1,2 h1 m-1,1 h1 m-1,1 h1 m-1,1 h1 m-1,2 h1 m-1,1 h1 m-1,1 h1 m-1,1 h1
+    m-1,2 h1 m-1,1 h1 m-1,1 h1 m-1,1 h1 m-1,2 h1 m-1,1 h1 m-1,1 h1 m-1,1 h1
+M-19,-.5 v1 m1,-1 v1 m1,-1 v1 m1,-1 v1 m2,-1 v1 m1,-1 v1 m1,-1 v1 m1,-1 v1
+    m2,-1 v1 m1,-1 v1 m1,-1 v1 m1,-1 v1 m2,-1 v1 m1,-1 v1 m1,-1 v1 m1,-1 v1
+    m2,-1 v1 m1,-1 v1 m1,-1 v1 m1,-1 v1 m2,-1 v1 m1,-1 v1 m1,-1 v1 m1,-1 v1
+    m2,-1 v1 m1,-1 v1 m1,-1 v1 m1,-1 v1 m2,-1 v1 m1,-1 v1 m1,-1 v1 m1,-1 v1"/>
+        </Canvas>
+    </Viewbox>
+    </Border>
+</ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+    </ResourceDictionary>
+    """
+
+    def __init__(self, segment, layer, *args,
+                 isTT=False, scale=1.0, Height=None, Width=None, **kwargs):
+        super().__init__(*args, **kwargs)
+
+        res = XamlReader.Load(XmlReader.Create(StringReader(self.StyleXAML)))
+        self.Style = res["MLCTemplate"]
+
+        if Height is not None:
+            self.Height = Height
+        if Width is not None:
+            self.Width = Width
+
+        if isTT:
+            self.Tag = segment
+            self.Text = layer
+            self.FontSize = 1.0
+            self.Width = self.Height = 200
+            return
+
+        mlc_points = self.get_mlc_polygon(segment, layer)
+        self.Tag = SystemArray[SystemDouble](segment.JawPositions)
+        self.Text = f'{mlc_points}'
+        self.FontSize = scale
+
+        mlc_TT = ToolTip()
+        mlc_TT_tb = self.__class__(self.Tag, self.Text, *args,
+                                   isTT=True, Height=400, Width=400,
+                                   **kwargs)
+        mlc_TT.Content = mlc_TT_tb
+
+        self.ToolTip = mlc_TT
+
+    @staticmethod
+    def get_mlc_polygon(segment, layer):
+        LEAF_LEN = 15.5
+
+        pts_bank0 = []
+        pts_bank1 = []
+        for lcp, lwidth, lp_bank0, lp_bank1 in zip(layer.LeafCenterPositions,
+                                                   layer.LeafWidths,
+                                                   *segment.LeafPositions):
+
+            # Note: We can chose to render based on the actual leaf size,
+            #  or run the leaf all the way back to -20...
+
+            pts_bank0 += [(lp_bank0 - LEAF_LEN, lcp - lwidth/2),
+                          (lp_bank0, lcp - lwidth/2),
+                          (lp_bank0, lcp + lwidth/2),
+                          (lp_bank0 - LEAF_LEN, lcp + lwidth/2)]
+
+            pts_bank1 += [(lp_bank1 + LEAF_LEN, lcp - lwidth/2),
+                          (lp_bank1, lcp - lwidth/2),
+                          (lp_bank1, lcp + lwidth/2),
+                          (lp_bank1 + LEAF_LEN, lcp + lwidth/2)]
+
+        bot_b0 = (-20, 20)
+        top_b0 = (-20, -20)
+        bot_b1 = (20, 20)
+        top_b1 = (20, -20)
+
+        pt_list = [top_b0,
+                   *pts_bank0,
+                   bot_b0,
+                   top_b0,
+                   top_b1,
+                   *pts_bank1,
+                   bot_b1,
+                   top_b1,
+                   top_b0]
+
+        return ' '.join([','.join(map(str, pt)) for pt in pt_list])
+
+
+class GantryRenderSlider(Slider):
+    StyleXAML_enc = """
+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
+tVDDvsdCVPRa+9+78cuH/wJhdzbL
+    """
+    StyleXAML = zlibdecompress(b64decode(StyleXAML_enc)).decode('UTF-8')
+
+    def __init__(self, beam, *args,
+                 isTT=False, Height=None, Width=None, **kwargs):
+        super().__init__(*args, **kwargs)
+
+        res = XamlReader.Load(XmlReader.Create(StringReader(self.StyleXAML)))
+        self.Style = res["GantryRep"]
+
+        self.IsDirectionReversed = beam.ArcRotationDirection != 'Clockwise'
+
+        angles = [180 - (180 - angle) % 360 for angle in
+                  [beam.GantryAngle, beam.ArcStopGantryAngle]
+                  if angle is not None]
+
+        self.Minimum = min(angles)
+        self.Maximum = max(angles)
+
+        if beam.ArcStopGantryAngle is None:
+            self.Orientation = Orientation.Vertical
+
+        if Height is not None:
+            self.Height = Height
+        if Width is not None:
+            self.Width = Width
+
+        if not isTT:
+            gantry_TT = ToolTip()
+            gantry_TT.Content = self.__class__(beam, *args,
+                                               isTT=True,
+                                               Height=400,
+                                               Width=400, **kwargs)
+            self.ToolTip = gantry_TT
+
 class GenericReorderDialog(RayWindow):
     _XAML = None
 
@@ -963,6 +1207,7 @@ class BeamReorderDialog(GenericReorderDialog):
             <Setter Property="Height" Value="42"/>
             <Setter Property="BorderBrush" Value="Black"/>
             <Setter Property="AllowDrop" Value="true"/>
+            <Setter Property="HorizontalContentAlignment" Value="Stretch"/>
         </Style>
         <LinearGradientBrush x:Key="TopHalf" EndPoint="0.5,0.5"
                              StartPoint="0.5,0">
@@ -1037,7 +1282,25 @@ class BeamReorderDialog(GenericReorderDialog):
         if beam.ArcStopGantryAngle is not None:
             beam_desc += f"-{beam.ArcStopGantryAngle:0.0f}"
 
-        lbi.Content = f"{item_name} [{beam_desc}]"
+        dp = DockPanel()
+        lbi.Content = dp
+        dp.LastChildFill = False
+
+        label = Label()
+        label.Content = f"{item_name} [{beam_desc}]"
+        dp.Children.Add(label)
+
+        segment = beam.Segments[0]
+        layer = beam.UpperLayer
+
+        mlc_tb = MLCRenderTextBox(segment, layer)
+
+        dp.Children.Add(mlc_tb)
+        dp.SetDock(mlc_tb, Dock.Right)
+
+        gs = GantryRenderSlider(beam)
+        dp.SetDock(gs, Dock.Right)
+        dp.Children.Add(gs)
 
         try:
             """
@@ -1277,9 +1540,8 @@ M-19,-.5 v1 m1,-1 v1 m1,-1 v1 m1,-1 v1 m2,-1 v1 m1,-1 v1 m1,-1 v1 m1,-1 v1
         self._beam = list_in
 
         segments = MakeMockery(self._beam, 'Segments')
+        self.MLCRenderScale = self.calc_mlc_scale(segments)
         super().__init__(segments, results)
-        self.MLCStyleTemplate = self.window.FindResource("MLCTemplate")
-        self.Resources["MLCRenderScale"] = self.calc_mlc_scale(segments)
 
     @staticmethod
     def calc_mlc_scale(segments):
@@ -1347,26 +1609,10 @@ M-19,-.5 v1 m1,-1 v1 m1,-1 v1 m1,-1 v1 m2,-1 v1 m1,-1 v1 m1,-1 v1 m1,-1 v1
                          f'CP{segment.SegmentNumber}')
         dp.Children.Add(label)
 
-        mlc_points = self.get_mlc_polygon(segment, layer)
-        _logger.debug(f"{mlc_points=}")
+ 
 
-        mlc_tb = TextBox()
-
-        mlc_tb.Tag = SystemArray[SystemDouble](segment.JawPositions)
-        mlc_tb.Text = f'{mlc_points}'
-
-        mlc_TT = ToolTip()
-        mlc_TT_tb = TextBox()
-
-        mlc_TT_tb.Tag = mlc_tb.Tag
-        mlc_TT_tb.Text = mlc_tb.Text
-        mlc_TT_tb.FontSize = 1.0
-        mlc_TT_tb.Width = mlc_TT_tb.Height = 200
-
-        mlc_TT_tb.Style = self.window.FindResource("MLCTemplate")
-        mlc_TT.Content = mlc_TT_tb
-
-        mlc_tb.ToolTip = mlc_TT
+        mlc_tb = MLCRenderTextBox(segment, layer,
+                                  scale=self.MLCRenderScale)
 
         dp.Children.Add(mlc_tb)
 

@@ -3,6 +3,7 @@ from random import choice, randint, uniform
 from copy import deepcopy
 from logging import getLogger
 from collections.abc import Sequence
+from enum import Enum
 _logger = getLogger(__name__)
 
 try:
@@ -52,8 +53,17 @@ def rand_from_hint(attr_type, attr_name=''):
             return f'{attr_name}_str'
         elif attr_type == DateTime:
             return DateTime.Now
+        elif issubclass(attr_type, Enum):
+            return choice([*attr_type])
         else:
-            return attr_type()
+            try:
+                return attr_type()
+            except (ValueError):
+                _logger.debug(f"Couldn't return default value for "
+                              f"attribute type {attr_type.__name__}"
+                              " from blank constructor.",
+                              exc_info=True)
+                return None
     elif attr_type is None:
         # Special case for None
         return None
@@ -468,6 +478,9 @@ class MockSegment(MockObject):
     RelativeWeight: float
     SegmentNumber: int
 
+    _COPY_ONLY = ['DoseRate', 'CollimatorAngle', 'JawPositions',
+                  'LeafPositions', 'RelativeWeight']
+
     def __enforce_rules__(self):
         # Clean leaf and jaw positions to feasible
         MLC_GAP = 0.5
@@ -502,8 +515,15 @@ class MockSegment(MockObject):
         self.LeafPositions = [list(p) for p in zip(*lp_pairs)]
 
 
+ArcRotationDirectionEnum = Enum('ArcRotationDirection',
+                                {'None': 'None',
+                                 'Clockwise': 'Clockwise',
+                                 'CounterClockwise': 'CounterClockwise'},
+                                 module=__name__, type=str)
+
+
 class MockBeam(MockObject):
-    ArcRotationDirection: str
+    ArcRotationDirection: ArcRotationDirectionEnum
     ArcStopGantryAngle: float
     BeamMU: float
     BeamQualityId: str
