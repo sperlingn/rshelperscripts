@@ -1082,11 +1082,13 @@ class ConformityIndicesWindow(RayWindow):
             _logger.debug(f"{savedialog.FileName=}")
 
             screen_dpi = VisualTreeHelper.GetDpi(self.MainPanel)
-            rtb_scale = 2
-            rtb_args = (rtb_scale*int(self.MainPanel.ActualWidth),
-                        rtb_scale*int(self.MainPanel.ActualHeight),
-                        rtb_scale*screen_dpi.PixelsPerInchX,
-                        rtb_scale*screen_dpi.PixelsPerInchY,
+            panel_size = VisualTreeHelper.GetContentBounds(self.MainPanel)
+            rtb_scale = screen_dpi.PixelsPerDip
+            _logger.debug(f"{rtb_scale=} {screen_dpi.PixelsPerDip=}")
+            rtb_args = (rtb_scale*int(panel_size.Width),
+                        rtb_scale*int(panel_size.Height),
+                        screen_dpi.PixelsPerInchX,
+                        screen_dpi.PixelsPerInchY,
                         PixelFormats.Pbgra32)
             renderTargetBitmap = RenderTargetBitmap(*rtb_args)
             renderTargetBitmap.Render(self.window)
