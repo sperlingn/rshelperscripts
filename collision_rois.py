@@ -236,6 +236,24 @@ class Overlaps(dict):
                     couch = getattr(beam, a)
                     break
 
+            # Correct for rotation angles when not in HFS
+            cp = self.beam_set.PatientSetup.CollisionProperties
+            exam = cp.ForExaminationStructureSet.OnExamination
+            exam_pp = exam.PatientPosition
+            bs_pp = ''.join(filter(str.isupper, self.beam_set.PatientPosition))
+
+            if exam_pp[0] == "F":
+                couch += 180
+            if exam_pp[2] == "P":
+                gstart += 180
+
+            if exam_pp[0] != bs_pp[0]:
+                couch += 180
+            if exam_pp[2] != bs_pp[2]:
+                gstart += 180
+
+            _logger.debug(f"{exam_pp=} {bs_pp=} {couch=} {gstart=}")
+
             gtext = nominal_beam_name(beam)
             fn_base = get_module_opt('fn_base', _FN_BASE)
             fn = fn_base.format(int(round(abs(arc), 0)))
