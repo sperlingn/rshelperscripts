@@ -747,6 +747,8 @@ M-19,-.5 v1 m1,-1 v1 m1,-1 v1 m1,-1 v1 m2,-1 v1 m1,-1 v1 m1,-1 v1 m1,-1 v1
         try:
             mlc_points = self.get_mlc_polygon(segment, layer)
         except TypeError:
+            _logger.error(f"Couldn't build MLC polygon:\n{layer=} {segment=}",
+                          exc_info=True)
             mlc_points = ''
         self.Tag = SystemArray[SystemDouble](segment.JawPositions)
         self.Text = f'{mlc_points}'
@@ -1313,6 +1315,12 @@ class BeamReorderDialog(GenericReorderDialog):
         try:
             segment = beam.Segments[0]
             layer = beam.UpperLayer
+            if layer.LeafCenterPositions is None or layer.LeafWidths is None:
+                _logger.debug("Layer missing leaf positions\n"
+                              f"{layer.LeafCenterPositions=}\n"
+                              f"{layer.LeafWidths=}")
+                machine = get_machine(beam)
+                layer = machine.Physics.MlcPhysics.UpperLayer
 
             mlc_tb = MLCRenderTextBox(segment, layer)
 
@@ -1580,7 +1588,10 @@ M-19,-.5 v1 m1,-1 v1 m1,-1 v1 m1,-1 v1 m2,-1 v1 m1,-1 v1 m1,-1 v1 m1,-1 v1
     def BuildLBI(self, item_name, item):
         segment = item
         layer = self._beam.UpperLayer
-        if layer is None:
+        if layer.LeafCenterPositions is None or layer.LeafWidths is None:
+            _logger.debug("Layer missing leaf positions\n"
+                          f"{layer.LeafCenterPositions=}\n"
+                          f"{layer.LeafWidths=}")
             machine = get_machine(self._beam)
             layer = machine.Physics.MlcPhysics.UpperLayer
 
