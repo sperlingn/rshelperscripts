@@ -1,7 +1,8 @@
 import logging
 from math import sqrt, sin, cos, pi
 from typing import Sequence, List, Tuple
-from .external import rs_callable, rs_hasattr, rs_getattr
+from .external import (rs_callable, rs_hasattr, rs_getattr,
+                       IndirectInheritanceClass)
 from .rsdicomread import read_dataset
 
 _logger = logging.getLogger(__name__)
@@ -443,7 +444,7 @@ class BoundingBox(list):
                 'VoxelSize': None}
 
 
-class CT_Image_Stack():
+class CT_Image_Stack(IndirectInheritanceClass):
     _size = None
     _bounding_box = None
     _npixels = None
@@ -472,10 +473,6 @@ class CT_Image_Stack():
         self._bounding_box = BoundingBox(img_stack)
 
         self.DICOM, = read_dataset(self._img_stack)
-
-    # Act like a regular RS ImageStack for anything we haven't overriden.
-    def __getattr__(self, attr):
-        return getattr(self._img_stack, attr)
 
     @property
     def size(self):

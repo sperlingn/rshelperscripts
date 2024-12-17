@@ -16,6 +16,8 @@ __opts = {'DUP_MAX_RECURSE': 10}
 
 _NAMELIST = ['Name', 'DicomPlanLabel', 'SegmentNumber']
 
+_INDIRECT_MACHINE_REF = {}
+
 
 def helperoverride(function):
     function.__overridden__ = True
@@ -449,6 +451,20 @@ def set_module_opts(**kwargs):
         set_module_opt(opt, val)
 
 
+class IndirectInheritanceClass:
+    # Class to act like we inherited from the base class of the object passed,
+    # and extended, without subclassing.  Allows attribute access for the
+    # passed object but nothing else.
+
+    __self_obj = None
+
+    def __init__(self, in_obj):
+        self.__self_obj = in_obj
+
+    def __getattr__(self, attr):
+        return getattr(self.__self_obj, attr)
+
+
 def StaticMWHandler_IncDecScroll(caller, event):
     try:
         scale = ValScale.get(Keyboard.Modifiers, 1)
@@ -728,7 +744,10 @@ M-19,-.5 v1 m1,-1 v1 m1,-1 v1 m1,-1 v1 m2,-1 v1 m1,-1 v1 m1,-1 v1 m1,-1 v1
             self.Width = self.Height = 200
             return
 
-        mlc_points = self.get_mlc_polygon(segment, layer)
+        try:
+            mlc_points = self.get_mlc_polygon(segment, layer)
+        except TypeError:
+            mlc_points = ''
         self.Tag = SystemArray[SystemDouble](segment.JawPositions)
         self.Text = f'{mlc_points}'
         self.FontSize = scale
@@ -857,6 +876,7 @@ tVDDvsdCVPRa+9+78cuH/wJhdzbL
                                                Height=400,
                                                Width=400, **kwargs)
             self.ToolTip = gantry_TT
+
 
 class GenericReorderDialog(RayWindow):
     _XAML = None
@@ -1290,13 +1310,16 @@ class BeamReorderDialog(GenericReorderDialog):
         label.Content = f"{item_name} [{beam_desc}]"
         dp.Children.Add(label)
 
-        segment = beam.Segments[0]
-        layer = beam.UpperLayer
+        try:
+            segment = beam.Segments[0]
+            layer = beam.UpperLayer
 
-        mlc_tb = MLCRenderTextBox(segment, layer)
+            mlc_tb = MLCRenderTextBox(segment, layer)
 
-        dp.Children.Add(mlc_tb)
-        dp.SetDock(mlc_tb, Dock.Right)
+            dp.Children.Add(mlc_tb)
+            dp.SetDock(mlc_tb, Dock.Right)
+        except ArgumentOutOfRangeException:
+            pass
 
         gs = GantryRenderSlider(beam)
         dp.SetDock(gs, Dock.Right)
@@ -1554,49 +1577,12 @@ M-19,-.5 v1 m1,-1 v1 m1,-1 v1 m1,-1 v1 m2,-1 v1 m1,-1 v1 m1,-1 v1 m1,-1 v1
         scale = HALF_WIDTH / (jaw_extreme + MARGIN)
         return scale
 
-    @staticmethod
-    def get_mlc_polygon(segment, layer):
-        LEAF_LEN = 15.5
-
-        pts_bank0 = []
-        pts_bank1 = []
-        for lcp, lwidth, lp_bank0, lp_bank1 in zip(layer.LeafCenterPositions,
-                                                   layer.LeafWidths,
-                                                   *segment.LeafPositions):
-
-            # Note: We can chose to render based on the actual leaf size,
-            #  or run the leaf all the way back to -20...
-
-            pts_bank0 += [(lp_bank0 - LEAF_LEN, lcp - lwidth/2),
-                          (lp_bank0, lcp - lwidth/2),
-                          (lp_bank0, lcp + lwidth/2),
-                          (lp_bank0 - LEAF_LEN, lcp + lwidth/2)]
-
-            pts_bank1 += [(lp_bank1 + LEAF_LEN, lcp - lwidth/2),
-                          (lp_bank1, lcp - lwidth/2),
-                          (lp_bank1, lcp + lwidth/2),
-                          (lp_bank1 + LEAF_LEN, lcp + lwidth/2)]
-
-        bot_b0 = (-20, 20)
-        top_b0 = (-20, -20)
-        bot_b1 = (20, 20)
-        top_b1 = (20, -20)
-
-        pt_list = [top_b0,
-                   *pts_bank0,
-                   bot_b0,
-                   top_b0,
-                   top_b1,
-                   *pts_bank1,
-                   bot_b1,
-                   top_b1,
-                   top_b0]
-
-        return ' '.join([','.join(map(str, pt)) for pt in pt_list])
-
     def BuildLBI(self, item_name, item):
         segment = item
         layer = self._beam.UpperLayer
+        if layer is None:
+            machine = get_machine(self._beam)
+            layer = machine.Physics.MlcPhysics.UpperLayer
 
         lbi = ListBoxItem()
 
@@ -1608,8 +1594,6 @@ M-19,-.5 v1 m1,-1 v1 m1,-1 v1 m1,-1 v1 m2,-1 v1 m1,-1 v1 m1,-1 v1 m1,-1 v1
         label.Content = (f'Beam {obj_name(self._beam)}, '
                          f'CP{segment.SegmentNumber}')
         dp.Children.Add(label)
-
- 
 
         mlc_tb = MLCRenderTextBox(segment, layer,
                                   scale=self.MLCRenderScale)
@@ -1808,11 +1792,13 @@ class MachineQueryResult:
         return self.NameAliases
 
 
-class Machine:
+class Machine(IndirectInheritanceClass):
     _machine = None
     _energies = None
 
     def __init__(self, machine):
+        super().__init__(machine)
+
         self._machine = machine
         if self._machine.PhotonBeamQualities is None:
             raise NotImplementedError("Only support for photons machines.")
@@ -1905,13 +1891,17 @@ class Machine:
 
 
 def get_machine(machine_ref):
-    mach_db = get_current("MachineDB")
     try:
         machine_name = f'{machine_ref.MachineReference.MachineName}'
     except AttributeError:
         machine_name = f'{machine_ref}'
 
-    return Machine(mach_db.GetTreatmentMachine(machineName=machine_name))
+    if machine_name not in _INDIRECT_MACHINE_REF:
+        mach_db = get_current("MachineDB")
+        mach = Machine(mach_db.GetTreatmentMachine(machineName=machine_name))
+        _INDIRECT_MACHINE_REF[machine_name] = mach
+
+    return _INDIRECT_MACHINE_REF[machine_name]
 
 
 def pick_site(sites=None, current=None, default=None):
