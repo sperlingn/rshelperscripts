@@ -653,10 +653,14 @@ class MLCRenderTextBox(TextBox):
                                     ScaleY="{Binding
     RelativeSource={RelativeSource TemplatedParent}, Path=FontSize}"/>
                     <SkewTransform/>
-                    <RotateTransform/>
+                    <RotateTransform Angle="{Binding Tag[4],
+                        RelativeSource={RelativeSource TemplatedParent}}"/>
                     <TranslateTransform/>
                 </TransformGroup>
             </Canvas.RenderTransform>
+            <Canvas.Clip>
+                <RectangleGeometry Rect="0,0,40,40"/>
+            </Canvas.Clip>
             <TextBlock x:Name="TemplateJawsPoints" Visibility="Collapsed" >
                 <TextBlock.Text>
 <MultiBinding StringFormat="{}{0},{3} {1},{3} {1},{2} {0},{2} {0},{3}">
@@ -750,7 +754,10 @@ M-19,-.5 v1 m1,-1 v1 m1,-1 v1 m1,-1 v1 m2,-1 v1 m1,-1 v1 m1,-1 v1 m1,-1 v1
             _logger.error(f"Couldn't build MLC polygon:\n{layer=} {segment=}",
                           exc_info=True)
             mlc_points = ''
-        self.Tag = SystemArray[SystemDouble](segment.JawPositions)
+
+        tag_data = [*segment.JawPositions, -segment.CollimatorAngle]
+
+        self.Tag = SystemArray[SystemDouble](tag_data)
         self.Text = f'{mlc_points}'
         self.FontSize = scale
 
