@@ -458,8 +458,11 @@ class IndirectInheritanceClass:
 
     __self_obj = None
 
-    def __init__(self, in_obj):
-        self.__self_obj = in_obj
+    def __new__(cls, *args, **kwargs):
+        inst = super().__new__(cls)
+        if len(args) > 0:
+            inst.__self_obj = args[0]
+        return inst
 
     def __getattr__(self, attr):
         return getattr(self.__self_obj, attr)
