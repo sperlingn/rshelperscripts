@@ -456,16 +456,16 @@ class IndirectInheritanceClass:
     # and extended, without subclassing.  Allows attribute access for the
     # passed object but nothing else.
 
-    __self_obj = None
+    _base = None
 
     def __new__(cls, *args, **kwargs):
         inst = super().__new__(cls)
         if len(args) > 0:
-            inst.__self_obj = args[0]
+            inst._base = args[0]
         return inst
 
     def __getattr__(self, attr):
-        return getattr(self.__self_obj, attr)
+        return getattr(self._base, attr)
 
 
 def StaticMWHandler_IncDecScroll(caller, event):
@@ -1814,14 +1814,10 @@ class MachineQueryResult:
 
 
 class Machine(IndirectInheritanceClass):
-    _machine = None
     _energies = None
 
     def __init__(self, machine):
-        super().__init__(machine)
-
-        self._machine = machine
-        if self._machine.PhotonBeamQualities is None:
+        if self.PhotonBeamQualities is None:
             raise NotImplementedError("Only support for photons machines.")
 
     @property
@@ -1829,7 +1825,7 @@ class Machine(IndirectInheritanceClass):
         if not self._energies:
             # Sort by increasing nominal energy, this will let us pull the
             # nearest value not above the current energy
-            energies = sorted(self._machine.PhotonBeamQualities,
+            energies = sorted(self.PhotonBeamQualities,
                               key=lambda e: e.NominalEnergy)
             self._energies = {(f'{int(e.NominalEnergy)}'
                                if e.FluenceMode is None else
@@ -1873,15 +1869,15 @@ class Machine(IndirectInheritanceClass):
                    'Couch': None}
 
         # Gantry
-        if self._machine.GantryScale == 'Iec61217':
+        if self.GantryScale == 'Iec61217':
             retdict['Gantry'] = beam.GantryAngle
             retdict['GantryStop'] = beam.ArcStopGantryAngle
-        elif self._machine.GantryScale == 'VarianStandard':
+        elif self.GantryScale == 'VarianStandard':
             retdict['Gantry'] = (-beam.GantryAngle + 180) % 360
             retdict['GantryStop'] = (-beam.ArcStopGantryAngle + 180) % 360
         else:
             raise NotImplementedError(
-                f"Unsupported Scale '{self._machine.GantryScale}'")
+                f"Unsupported Scale '{self.GantryScale}'")
 
         # Collimator
         try:
@@ -1889,24 +1885,24 @@ class Machine(IndirectInheritanceClass):
         except ArgumentOutOfRangeException:
             collimator = beam.InitialCollimatorAngle
 
-        if self._machine.CollimatorScale == 'Iec61217':
+        if self.CollimatorScale == 'Iec61217':
             retdict['Collimator'] = collimator
-        elif self._machine.CollimatorScale == 'VarianStandard':
+        elif self.CollimatorScale == 'VarianStandard':
             retdict['Collimator'] = (-collimator + 180) % 360
         else:
             raise NotImplementedError(
-                f"Unsupported Scale '{self._machine.CollimatorScale}'")
+                f"Unsupported Scale '{self.CollimatorScale}'")
 
         # Couch
-        if self._machine.CouchScale == 'Iec61217':
+        if self.CouchScale == 'Iec61217':
             retdict['Couch'] = beam.CouchRotationAngle
-        elif self._machine.CouchScale == 'VarianIec':
+        elif self.CouchScale == 'VarianIec':
             retdict['Couch'] = (-beam.CouchRotationAngle) % 360
-        elif self._machine.CouchScale == 'VarianStandard':
+        elif self.CouchScale == 'VarianStandard':
             retdict['Couch'] = (-beam.CouchRotationAngle + 180) % 360
         else:
             raise NotImplementedError(
-                f"Unsupported Scale '{self._machine.CouchScale}'")
+                f"Unsupported Scale '{self.CouchScale}'")
 
         return retdict
 

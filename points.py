@@ -453,7 +453,6 @@ class CT_Image_Stack(IndirectInheritanceClass):
     DICOM = None
 
     def __init__(self, img_stack):
-        self._img_stack = img_stack
         if abs(point(img_stack.SliceDirection)) != point.Z():
             raise NotImplementedError("Can only handle Z direction scans.")
 
@@ -472,7 +471,7 @@ class CT_Image_Stack(IndirectInheritanceClass):
 
         self._bounding_box = BoundingBox(img_stack)
 
-        self.DICOM, = read_dataset(self._img_stack)
+        self.DICOM, = read_dataset(self)
 
     @property
     def size(self):
@@ -608,7 +607,7 @@ class CT_Image_Stack(IndirectInheritanceClass):
             ridog_kwargs = {"NrVoxelsVec": [voxelcount],
                             "VoxelSizesVec": [voxelsizes],
                             "CornerVec": [corner]}
-            lines = self._img_stack.ResampleImageDataOnGrids(**ridog_kwargs)
+            lines = self.ResampleImageDataOnGrids(**ridog_kwargs)
             line = list(lines[0])
             if line_invert:
                 line_pos = line_pos[::-1]
