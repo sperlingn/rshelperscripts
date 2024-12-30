@@ -747,7 +747,7 @@ M-19,-.5 v1 m1,-1 v1 m1,-1 v1 m1,-1 v1 m2,-1 v1 m1,-1 v1 m1,-1 v1 m1,-1 v1
         if isTT:
             self.Tag = segment
             self.Text = layer
-            self.FontSize = 1.0
+            self.FontSize = scale
             self.Width = self.Height = 200
             return
 
@@ -762,12 +762,18 @@ M-19,-.5 v1 m1,-1 v1 m1,-1 v1 m1,-1 v1 m2,-1 v1 m1,-1 v1 m1,-1 v1 m1,-1 v1
 
         self.Tag = SystemArray[SystemDouble](tag_data)
         self.Text = f'{mlc_points}'
-        self.FontSize = scale
+
+        # Zoom in for MLC banks less than 40cm tall.
+        zoom = 40. / (layer.LeafCenterPositions[-1]
+                      - layer.LeafCenterPositions[0]
+                      + (layer.LeafWidths[-1] / 2)
+                      + (layer.LeafWidths[0] / 2))
+        self.FontSize = scale * zoom
 
         mlc_TT = ToolTip()
         mlc_TT_tb = self.__class__(self.Tag, self.Text, *args,
                                    isTT=True, Height=400, Width=400,
-                                   **kwargs)
+                                   scale=zoom, **kwargs)
         mlc_TT.Content = mlc_TT_tb
 
         self.ToolTip = mlc_TT
@@ -795,10 +801,11 @@ M-19,-.5 v1 m1,-1 v1 m1,-1 v1 m1,-1 v1 m2,-1 v1 m1,-1 v1 m1,-1 v1 m1,-1 v1
                           (lp_bank1, lcp + lwidth/2),
                           (lp_bank1 + LEAF_LEN, lcp + lwidth/2)]
 
-        bot_b0 = (-20, 20)
-        top_b0 = (-20, -20)
-        bot_b1 = (20, 20)
-        top_b1 = (20, -20)
+        top_b0 = (-20, pts_bank0[0][1])
+        bot_b0 = (-20, pts_bank0[-1][1])
+
+        top_b1 = (20, top_b0[1])
+        bot_b1 = (20, bot_b0[1])
 
         pt_list = [top_b0,
                    *pts_bank0,
@@ -1452,90 +1459,6 @@ class SegmentReorderDialog(GenericReorderDialog):
             <GradientStop Color="White" Offset="1"/>
         </LinearGradientBrush>
         <SolidColorBrush x:Key="WhiteTransparent" Color="#7FFFFFFF"/>
-        <Style x:Key="MLCTemplate" TargetType="{x:Type TextBox}">
-            <Setter Property="Template">
-                <Setter.Value>
-<ControlTemplate TargetType="{x:Type TextBox}">
-    <Border Background="White" BorderBrush="Black" BorderThickness="1">
-        <Viewbox Width="{TemplateBinding Width}"
-                Height="{TemplateBinding Height}" ClipToBounds="True">
-        <Canvas Width="40" Height="40" Background="White"
-                RenderTransformOrigin="0.5,0.5">
-            <Canvas.RenderTransform>
-                <TransformGroup>
-                    <ScaleTransform ScaleX="{Binding
-    RelativeSource={RelativeSource TemplatedParent}, Path=FontSize}"
-                                    ScaleY="{Binding
-    RelativeSource={RelativeSource TemplatedParent}, Path=FontSize}"/>
-                    <SkewTransform/>
-                    <RotateTransform/>
-                    <TranslateTransform/>
-                </TransformGroup>
-            </Canvas.RenderTransform>
-            <TextBlock x:Name="TemplateJawsPoints" Visibility="Collapsed" >
-                <TextBlock.Text>
-<MultiBinding StringFormat="{}{0},{3} {1},{3} {1},{2} {0},{2} {0},{3}">
-    <Binding RelativeSource="{RelativeSource TemplatedParent}" Path="Tag[0]"/>
-    <Binding RelativeSource="{RelativeSource TemplatedParent}" Path="Tag[1]"/>
-    <Binding RelativeSource="{RelativeSource TemplatedParent}" Path="Tag[2]"/>
-    <Binding RelativeSource="{RelativeSource TemplatedParent}" Path="Tag[3]"/>
-</MultiBinding>
-                </TextBlock.Text>
-            </TextBlock>
-            <Rectangle Width="40" Height="40" Panel.ZIndex="1">
-                <Rectangle.Fill>
-                    <SolidColorBrush Color="#FF5EB6FF" Opacity="0.8"/>
-                </Rectangle.Fill>
-                <Rectangle.Clip>
-<GeometryGroup>
-    <RectangleGeometry Rect="0,0,40,40"/>
-    <PathGeometry>
-        <PathGeometry.Figures>
-            <PathFigure IsClosed="True">
-                <PolyLineSegment Points="{Binding Text,
-                    ElementName=TemplateJawsPoints}" />
-            </PathFigure>
-        </PathGeometry.Figures>
-        <PathGeometry.Transform>
-            <TransformGroup>
-                <TranslateTransform X="20" Y="20"/>
-            </TransformGroup>
-        </PathGeometry.Transform>
-    </PathGeometry>
-</GeometryGroup>
-                </Rectangle.Clip>
-            </Rectangle>
-<Polygon Fill="#FF005DFF" Canvas.Left="20" Canvas.Top="20"
-       Points="{Binding Text, RelativeSource={RelativeSource TemplatedParent}}"
-       Stroke="#FF80C5FF" StrokeThickness="0.2" StrokeLineJoin="Bevel">
-    <Polygon.RenderTransform>
-        <TransformGroup>
-            <ScaleTransform ScaleY="-1" ScaleX="1"/>
-            <SkewTransform AngleY="0" AngleX="0"/>
-            <RotateTransform Angle="0"/>
-            <TranslateTransform/>
-        </TransformGroup>
-    </Polygon.RenderTransform>
-</Polygon>
-<Path x:Name="Crosshair" Canvas.Left="20" Canvas.Top="20" Stroke="Blue"
-      StrokeThickness="0.1" Data="M 0,-20 v40 M -20,0 h40
-M-1,-20 h2 m-2,5 h2 m-2,5 h2 m-2,5 h2 m-2,10 h2 m-2,5 h2 m-2,5 h2 m-2,5 h2
-M-20,-1 v2 m5,-2 v2 m5,-2 v2 m5,-2 v2 m10,-2 v2 m5,-2 v2 m5,-2 v2 m5,-2 v2
-M-.5,-19 h1 m-1,1 h1 m-1,1 h1 m-1,1 h1 m-1,2 h1 m-1,1 h1 m-1,1 h1 m-1,1 h1
-    m-1,2 h1 m-1,1 h1 m-1,1 h1 m-1,1 h1 m-1,2 h1 m-1,1 h1 m-1,1 h1 m-1,1 h1
-    m-1,2 h1 m-1,1 h1 m-1,1 h1 m-1,1 h1 m-1,2 h1 m-1,1 h1 m-1,1 h1 m-1,1 h1
-    m-1,2 h1 m-1,1 h1 m-1,1 h1 m-1,1 h1 m-1,2 h1 m-1,1 h1 m-1,1 h1 m-1,1 h1
-M-19,-.5 v1 m1,-1 v1 m1,-1 v1 m1,-1 v1 m2,-1 v1 m1,-1 v1 m1,-1 v1 m1,-1 v1
-    m2,-1 v1 m1,-1 v1 m1,-1 v1 m1,-1 v1 m2,-1 v1 m1,-1 v1 m1,-1 v1 m1,-1 v1
-    m2,-1 v1 m1,-1 v1 m1,-1 v1 m1,-1 v1 m2,-1 v1 m1,-1 v1 m1,-1 v1 m1,-1 v1
-    m2,-1 v1 m1,-1 v1 m1,-1 v1 m1,-1 v1 m2,-1 v1 m1,-1 v1 m1,-1 v1 m1,-1 v1"/>
-        </Canvas>
-    </Viewbox>
-    </Border>
-</ControlTemplate>
-                </Setter.Value>
-            </Setter>
-        </Style>
         <System:Double x:Key="MLCRenderScale">1.0</System:Double>
     </Window.Resources>
     <Window.TaskbarItemInfo>
@@ -1555,11 +1478,10 @@ M-19,-.5 v1 m1,-1 v1 m1,-1 v1 m1,-1 v1 m2,-1 v1 m1,-1 v1 m1,-1 v1 m1,-1 v1
             <ListBox x:Name="ItemListBox" AllowDrop="True"
                      Tag="{DynamicResource MLCRenderScale}">
                 <ListBox.Resources>
-                    <Style TargetType="TextBox"
-                           BasedOn="{StaticResource MLCTemplate}">
-    <Setter Property="FontSize" Value="{Binding Path=Tag,
-        RelativeSource={RelativeSource FindAncestor,
-        AncestorType={x:Type ListBox}}}"/>
+                    <Style TargetType="TextBox">
+                        <Setter Property="FontSize" Value="{Binding Path=Tag,
+                            RelativeSource={RelativeSource FindAncestor,
+                            AncestorType={x:Type ListBox}}}"/>
                         <Setter Property="DockPanel.Dock" Value="Right"/>
                     </Style>
                     <Style TargetType="DockPanel">
@@ -1575,7 +1497,6 @@ M-19,-.5 v1 m1,-1 v1 m1,-1 v1 m1,-1 v1 m2,-1 v1 m1,-1 v1 m1,-1 v1 m1,-1 v1
     </StackPanel>
 </Window>
     """
-    MLCStyleTemplate = None  # Style template for mlc "TextBox" (renders MLCs)
 
     def __init__(self, list_in, results):
         self._beam = list_in
