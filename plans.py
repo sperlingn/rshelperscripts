@@ -27,7 +27,8 @@ _PLAN_PARAM_DEFAULT = {
 
 _BS_PARAM_MAPPING = {
     'Name': 'DicomPlanLabel',
-    'ExaminationName': None,  # Needs to be set from new plan
+    'ExaminationName': 'PatientSetup.CollisionProperties.'
+                       'ForExaminationStructureSet.OnExamination.Name',
     'MachineName': 'MachineReference.MachineName',
     'Modality': True,
     'TreatmentTechnique': cll.get_technique_from_beamset,
@@ -47,7 +48,7 @@ _BS_PARAM_MAPPING = {
 }
 
 _BS_PARAM_DEFAULT = {
-    'ExaminationName': '',  # Needs to be set from new plan
+    'ExaminationName': None,  # Needs to be set from new plan
     'UseLocalizationPointAsSetupIsocenter': False,
     'UseUserSelectedIsocenterSetupIsocenter': False,
     'RbeModelName': None,
@@ -405,7 +406,7 @@ def copy_plan_to_plan(plan_in, plan_out,
     elif len(plan_out.BeamSets) == 1:
         # We have a placeholder beamset, prepare it.
         tempbs = plan_out.BeamSets[0]
-        tempname = get_unique_name('TEMP_BS', plan_out.BeamSets)
+        tempname = get_unique_name('TEMP_BS', plan_in.BeamSets)
         tempbs.DicomPlanLabel = tempname
 
         exam_out = exam_out if exam_out else tempbs.GetPlanningExamination()
@@ -428,6 +429,8 @@ def copy_plan_to_plan(plan_in, plan_out,
 
     copy_plan_optimizations(plan_in, plan_out)
 
+    return plan_out
+
 
 def copy_bs(plan_in, beamset_in, plan_out,
             examination_name=None, exclude_segments=False,
@@ -442,16 +445,18 @@ def copy_bs(plan_in, beamset_in, plan_out,
     _logger.debug(f"Adding new beamset with {params=}")
 
     final_technique = params['TreatmentTechnique']
-    if 'Arc' in beamset_in.DeliveryTechnique:
-        # Some type of arc, for now beamset_out must be set to conformal arc to
-        # allow creation of segments.
-        params['TreatmentTechnique'] = 'ConformalArc'
 
     plan_out.AddNewBeamSet(**params)
 
     beamset_out = plan_out.BeamSets[params['Name']]
 
     copy_rx(beamset_in, beamset_out)
+
+    if 'Arc' in beamset_in.DeliveryTechnique and \
+            not native_copy_ok(beamset_in, beamset_out):
+        # Some type of arc, for now beamset_out must be set to conformal arc to
+        # allow creation of segments.
+        beamset_out.SetTreatmentTechnique(Technique='ConformalArc')
 
     copy_beams(plan_in, beamset_in, plan_out, beamset_out,
                exclude_segments=exclude_segments)
@@ -463,6 +468,8 @@ def copy_bs(plan_in, beamset_in, plan_out,
     # Dose Grid
     dg_params = params_from_dosegrid(beamset_in.GetDoseGrid())
     beamset_out.UpdateDoseGrid(**dg_params)
+
+    return beamset_out
 
 
 def copy_rx(beamset_in, beamset_out):
@@ -499,6 +506,8 @@ def copy_rx(beamset_in, beamset_out):
             last_rx = out_refs[len(out_refs) - 1]
             last_rx.SetPrimaryPrescriptionDoseReference()
 
+    return rx_out
+
 
 def beam_opt_settings_from_plan(plan, beamset, beam):
     bsid = beamset.UniqueId
@@ -518,9 +527,46 @@ def beam_opt_settings_from_plan(plan, beamset, beam):
                     return beamsetting
     return None
 
+
+def get_opts_for_bs(plan, beamset):
+    # Returns a list of PlanOptmizations that optimize this beamset.
+    bsid = beamset.UniqueId
+    return [opt for opt in plan.PlanOptimizations
+            if (bsid in (obs.UniqueId for obs in opt.OptimizedBeamSets) and
+                bsid in (tx_setup.ForTreatmentSetup.UniqueId for tx_setup in
+                         opt.OptimizationParameters.TreatmentSetupSettings))]
+
+
+def native_copy_ok(beamset_in, beamset_out):
+    # Check if the native copy beamset function would throw an exception
+    # without running it (having an exception occur inside of a CompositeAction
+    # and trying to catch that exception will crash RS)
+    COMPARATORS = ["PatientSetup.CollisionProperties"
+                   ".ForExaminationStructureSet.OnExamination.Name",
+                   "MachineReference.MachineName",
+                   "DeliveryTechnique",
+                   "PlanGenerationTechnique",
+                   "Modality"]
+
+    bs_list = {attr: [rs_getattr(bs, attr) for bs
+                      in [beamset_in, beamset_out]] for attr in COMPARATORS}
+    _logger.debug(f"{bs_list=}")
+
+    return all([rs_getattr(beamset_in, attr) == rs_getattr(beamset_out, attr)
+                for attr in COMPARATORS])
+
+
 def copy_beams(plan_in, beamset_in, plan_out, beamset_out, # noqa: C901
                exclude_segments=True):
     _logger.debug(f"Copying beams from {beamset_in} to {beamset_out}.")
+
+    if native_copy_ok(beamset_in, beamset_out):
+        beamset_out.CopyBeamsFromBeamSet(BeamSetToCopyFrom=beamset_in,
+                                         BeamsToCopy=None)
+        return
+    else:
+        _logger.debug("Failed native copy method, try brute force method.",
+                      exc_info=True)
 
     if beamset_in.Modality == 'Photons':
         # Will have to test which one later, for now just use PhotonBeam
