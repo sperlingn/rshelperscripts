@@ -820,7 +820,7 @@ class ConformityIndicesWindow(RayWindow):
         primary_rxdose = ppdr.DoseValue
         pdrlist = []
 
-        if ppdr.PrescriptionType == 'DoseAtVolume':
+        if ppdr.PrescriptionType in ['DoseAtVolume', 'NearMinimumDose']:
             pdrlist = [ppdr]
 
         _logger.debug(f"Initial {pdrlist=}")
