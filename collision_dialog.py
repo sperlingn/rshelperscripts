@@ -5,6 +5,7 @@
 
 import sys
 
+from System.Windows import Visibility
 from System.Windows.Controls import (TreeViewItem, StackPanel,
                                      ListBoxItem, Label, ToolTip)
 from System.Windows.Shapes import Ellipse
@@ -15,7 +16,7 @@ from System.Windows.Forms import Application
 from .external import get_current, RayWindow, CompositeAction
 from .case_comment_data import set_validation_comment
 
-from .collision_rois import (beamset_rois, Overlaps,
+from .collision_rois import (beamset_rois, Overlaps, __FAB__,
                              nominal_beam_name, nominal_iso_name)
 
 import logging
@@ -197,7 +198,7 @@ XAML = """
                                 </StackPanel>
                             </TreeViewItem>
                         </TreeView>
-                        <StackPanel>
+                        <StackPanel x:Name="Main_Status_StackPanel">
                             <Button x:Name="CheckPerBeam"
                                 Content="Recheck Beams"/>
                             <StackPanel x:Name="Collision_LED_Container">
@@ -241,11 +242,13 @@ class BeamIsoTreeViewItem(TreeViewItem):
 
 class Status_LED(Ellipse):
     _color = ''
+    _name = ''
     _status_to_color_map = {'OK': 'Lime',
                             'Collision': 'Red',
                             'Unknown': 'Yellow'}
 
-    def __init__(self, *args, **kwargs):
+    def __init__(self, name, *args, **kwargs):
+        self._name = name
         super().__init__(*args, **kwargs)
 
         self._color_map_to_status = dict(
@@ -257,7 +260,7 @@ class Status_LED(Ellipse):
 
     @_status.setter
     def _status(self, status):
-        _logger.debug(f"{status=}")
+        _logger.debug(f"{self}: {status=}")
         color = self._status_to_color_map['Unknown']
         if status in self._status_to_color_map:
             color = self._status_to_color_map[status]
@@ -279,6 +282,9 @@ class Status_LED(Ellipse):
             self._color = color
             self.Fill = BrushConverter().ConvertFrom(color)
 
+    def __str__(self):
+        return f'{self._name} LED'
+
 
 class BeamIconStackPanel(StackPanel):
     _icon = None
@@ -289,7 +295,7 @@ class BeamIconStackPanel(StackPanel):
     def __init__(self, beam_name, color=None, *args, **kwargs):
         super().__init__(*args, **kwargs)
 
-        self._icon = Status_LED()
+        self._icon = Status_LED(beam_name)
         self._label = Label()
         self.Children.Add(self._icon)
         self.Children.Add(self._label)
@@ -335,7 +341,8 @@ class BeamIconStackPanel(StackPanel):
             colliders = ''
         if self._colliders != f'{colliders}':
             self._colliders = f'{colliders}'
-            self.ToolTip.Visibility = 0 if self._colliders else 2
+            self.ToolTip.Visibility = (Visibility.Visible if self._colliders
+                                       else Visibility.Collapsed)
 
         if self._colliders:
             content = f'Collisions with: {self._colliders}'
@@ -343,7 +350,7 @@ class BeamIconStackPanel(StackPanel):
             self.ToolTip.Content = content
             self.beam_status = 'Collision'
         else:
-            self._beam_status = 'OK'
+            self.beam_status = 'OK'
 
 
 class CollisionDetectionDialogWindow(RayWindow):
@@ -363,6 +370,7 @@ class CollisionDetectionDialogWindow(RayWindow):
     checkBox = None  # CheckBox
     Eval_ROIs = None  # ListBox
     CheckPerBeam = None  # Button
+    Main_Status_StackPanel = None # StackPanel
     # Resources: self.Resources['']
 
     beam_set = None
@@ -373,9 +381,10 @@ class CollisionDetectionDialogWindow(RayWindow):
     beamset_rois = None
     _margin = 0
 
-    def __init__(self, beam_set, results):
+    def __init__(self, beam_set, results, full_arc_check=False):
         self.LoadComponent(XAML)
 
+        self.full_arc_check = full_arc_check
         self.beam_set = beam_set
 
         self.ContentRendered += self.__rendered__
@@ -392,12 +401,12 @@ class CollisionDetectionDialogWindow(RayWindow):
 
         self.expMargin_Value.TextChanged += self.margin_updated
 
-        self.checkBox.Visibility = 2
+        self.checkBox.Visibility = Visibility.Collapsed
 
         self.Eval_ROIs.Items.Clear()
         self.BeamTreeView.Items.Clear()
 
-        self.Collision_LED = Status_LED()
+        self.Collision_LED = Status_LED('Master Collision')
         self.Collision_LED.Width = 80
         self.Collision_LED.Height = 80
 
@@ -409,22 +418,34 @@ class CollisionDetectionDialogWindow(RayWindow):
 
         self.results = results
 
-        self.beam_items = {}
+        self.beam_items = []
         iso_beams = {}
 
+        # Add Indicator for full arc/CBCT collision to main stack panel
+        cbct = BeamIconStackPanel('CBCT/Full Arc')
+        if not full_arc_check:
+            cbct.Visibility = Visibility.Collapsed
+        self.Main_Status_StackPanel.Children.Add(cbct)
+        self.CBCT_Collider_LED = cbct
+
         for beam in self.beam_set.Beams:
+            # Build the tree of isocenters, and populate the iso_beams
+            # dictionary with an entry for each beam at this isocenter named
+            # after the actual beam name (enforced unique in RS)
             beamname = nominal_beam_name(beam)
             iso_name = nominal_iso_name(beam.Isocenter)
-            beam_dict = {'stack': None,
-                         'beam': beam}
+            beam_dict = {'name': beam.Name,
+                         'stack': None,
+                         'beam': beam,
+                         'gantry': beamname}
             if iso_name not in iso_beams:
                 iso_beams[iso_name] = {
                     'viewitem': BeamIsoTreeViewItem(iso_name),
-                    'beams': {beamname: beam_dict}}
+                    'beams': {beam.Name: beam_dict}}
             else:
-                iso_beams[iso_name]['beams'][beamname] = beam_dict
+                iso_beams[iso_name]['beams'][beam.Name] = beam_dict
 
-            self.beam_items[beamname] = beam_dict
+            self.beam_items.append(beam_dict)
 
         for iso_dict in iso_beams.values():
             iso_item = iso_dict['viewitem']
@@ -448,7 +469,7 @@ class CollisionDetectionDialogWindow(RayWindow):
             stack.beam_status = status
 
     def _processing_callback(self, value, step_name=""):
-        self.beam_in_progress.Visibility = 0
+        self.beam_in_progress.Visibility = Visibility.Visible
         self.beam_in_progress.Content = f"{step_name}"
         self.ProgressBar.Value = value*100
         Application.DoEvents()
@@ -487,7 +508,8 @@ class CollisionDetectionDialogWindow(RayWindow):
         self._overlaps = Overlaps(invalidation_cb_fn=self.invalidated,
                                   iter_cb_fn=self._processing_callback,
                                   gantry_cb_fn=self.__loading_prog_cb__,
-                                  beam_set=self.beam_set)
+                                  beam_set=self.beam_set,
+                                  full_arc_check=self.full_arc_check)
 
         Application.DoEvents()
 
@@ -552,23 +574,31 @@ class CollisionDetectionDialogWindow(RayWindow):
         _logger.debug(f"{sender=} {event=}")
         self.update_all_leds('Unknown')
         overlaps = self.overlaps
+        beams = overlaps.colliders_by_beam
+
         if not overlaps.hasCollision:
             _logger.debug(f"No collision {overlaps=}")
             self.update_all_leds('OK')
         else:
+            # Might be a collision, check by beam
             _logger.debug(f"Collision {overlaps=}")
-            self.Collision_LED._status = 'Collision'
-            beams = overlaps.colliders_by_beam
-            for iso_beamname, colliders in beams.items():
-                beamname = iso_beamname.split(': ')[-1]
-                _logger.debug(f"{beamname=}, {colliders=}")
+            for beam_dict in self.beam_items:
+                gantry_name = overlaps.beam_map[beam_dict['name']]
                 try:
-                    self.beam_items[beamname]['stack'].colliders = colliders
+                    beam_dict['stack'].colliders = beams[gantry_name]
+                    if beam_dict['stack'].colliders:
+                        self.Collision_LED._status = 'Collision'
                 except KeyError:
                     logging.debug(f"Couldn't find beam with name {beamname} "
                                   "in the beam_stack list")
 
-        self.beam_in_progress.Visibility = 2
+        cbct = None
+        if __FAB__ in overlaps.beam_map:
+            cbct = beams[overlaps.beam_map[__FAB__]]
+        _logger.debug(f"{cbct=}")
+        self.CBCT_Collider_LED.colliders = cbct
+
+        self.beam_in_progress.Visibility = Visibility.Collapsed
 
     def _Closing(self, *args, **kwargs):
         _logger.debug(f"Closing(*{args}, **{{{kwargs}}})")
@@ -581,10 +611,12 @@ class CollisionDetectionDialogWindow(RayWindow):
         self.Close()
 
 
-def check_collision_dialog(plan, beam_set):
+def check_collision_dialog(plan, beam_set, full_arc_check=False):
+    # TODO: Handle full arc check
 
     results = {}
-    dlg = CollisionDetectionDialogWindow(beam_set, results)
+    dlg = CollisionDetectionDialogWindow(beam_set, results,
+                                         full_arc_check=full_arc_check)
 
     try:
         with CompositeAction("Collision Check"):

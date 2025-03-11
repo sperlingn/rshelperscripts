@@ -9,6 +9,7 @@ from .external import (CompositeAction, get_current, get_module_opt,
                        Show_OK, Show_OKCancel, Show_YesNo, MB_Icon, MB_Result)
 from .case_comment_data import set_validation_comment
 from .roi import ROI_Builder
+from .mock_objects import MockBeam
 
 import logging
 
@@ -22,6 +23,8 @@ _CREATE_OPTS = {'Color': 'White',
 _FN_BASE = '.\\CD\\{:0d}.stl'
 
 _logger = logging.getLogger(__name__)
+
+__FAB__ = 'FULL ARC BEAM'
 
 
 def nominal_iso_name(isocenter, use_annotation=True):
@@ -99,6 +102,8 @@ class Overlaps(dict):
 
     _gantries = None
     _builder = None
+    beams = None # Beams to check against (set if passed beamset)
+    beam_map = None # Dict mapping beams to the rois used for collision
 
     # Dict of dicts of bools.
     # Adds a helper function to check any and all for all of them
@@ -107,18 +112,32 @@ class Overlaps(dict):
     # require an extra import/venv.
     def __init__(self, *args,
                  invalidation_cb_fn=None, iter_cb_fn=None, gantry_cb_fn=None,
-                 beam_set=None,
+                 beam_set=None, full_arc_check=False,
                  **kwargs):
 
         self._invalidation_cb_fn = invalidation_cb_fn
         self._iter_cb_fn = iter_cb_fn
         self._gantry_cb_fn = gantry_cb_fn
         self._gantries = {}
+        self.beam_map = {}
 
         super().__init__(*args, **kwargs)
 
         if beam_set:
             self.beam_set = beam_set
+            self.beams = [b for b in beam_set.Beams]
+            if full_arc_check:
+                # Add a beam for a full arc check at 0 couch as well.
+                fab = MockBeam(ArcRotationDirection='Clockwise',
+                               GantryAngle=181,
+                               ArcStopGantryAngle=179,
+                               Name=__FAB__,
+                               # Use the first beams' isocenter... #TODO don't.
+                               Isocenter=self.beams[0].Isocenter,
+                               CouchRotationAngle=0.0)
+                self.beams.append(fab)
+
+
             self._builder = ROI_Builder(beam_set=beam_set,
                                         default_opts=self.coll_create_opts)
 
@@ -218,7 +237,7 @@ class Overlaps(dict):
         return colliderdict
 
     def _add_gantries(self):
-        for i, beam in enumerate(self.beam_set.Beams):
+        for i, beam in enumerate(self.beams):
             a_start = beam.GantryAngle
             if beam.ArcStopGantryAngle is None:
                 arc = 0
@@ -272,14 +291,16 @@ class Overlaps(dict):
                 roi = self._builder.GetOrCreateROI(gantry_name, _CREATE_OPTS)
                 self._gantries[gantry_name] = roi
 
-            roi.DeleteGeometry()
+                roi.DeleteGeometry()
 
-            try:
-                roi.importSTL(fn, tm, **_STL_OPTS)
-            except SystemError:
-                _logger.exception(f"Failed to add for gantry {gantry_name}")
+                try:
+                    roi.importSTL(fn, tm, **_STL_OPTS)
+                except SystemError:
+                    _logger.exception(f"Failed to add gantry {gantry_name}")
 
-            self.gantry_cb(i/len(self.beam_set.Beams), beam.Name)
+            self.gantry_cb(i/len(self.beams), beam.Name)
+
+            self.beam_map[beam.Name] = gantry_name
 
     def check_rois(self, rois_set, margin=0):
         # Build structure of all patient geometries to check against
@@ -337,11 +358,13 @@ class Overlaps(dict):
 
 
 def check_collision(plan, beam_set, silent=False, retain=False,
-                    retain_on_fail=True):
+                    retain_on_fail=True, full_arc_check=False):
+    # TODO: Add full arc check logic
     try:
         with CompositeAction("Add Collision ROIs"):
 
-            overlaps = Overlaps(beam_set=beam_set)
+            overlaps = Overlaps(beam_set=beam_set,
+                                full_arc_check=full_arc_check)
 
             if not silent:
                 check = Show_YesNo("Perform automatic collision check?",

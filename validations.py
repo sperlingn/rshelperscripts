@@ -217,14 +217,21 @@ def validate_jaw(plan, beam_set, silent=False, fix_errors=False):
     return validation
 
 
-def validate_collision(plan, beam_set, silent=False):
+def validate_collision(plan, beam_set, silent=False, full_arc_check=False):
+    # plan: Raystation Plan object to check on
+    # beam_set: Raystation Beamset object to check all beams for
+    # silent: Supress any dialogs/GUIs (default: False)
+    # full_arc_check: Add a check for a 360 arc at 0 couch (default: False)
+
     can_update_comment = beamset_validation_check(beam_set)
 
     if silent:
         coll_result = check_collision(plan, beam_set, silent=True,
-                                      retain=False, retain_on_fail=False)
+                                      retain=False, retain_on_fail=False,
+                                      full_arc_check=full_arc_check)
     else:
-        coll_result = check_collision_dialog(plan, beam_set)
+        coll_result = check_collision_dialog(plan, beam_set,
+                                             full_arc_check=full_arc_check)
 
     update_comment = can_update_comment and coll_result['UpdateComment']
 
