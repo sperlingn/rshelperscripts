@@ -207,10 +207,12 @@ try:
                          await_user_input as _await_user_input, set_progress)
 
     IN_RAYSTATION = True
+    RS_VERSION = get_current("ui").GetApplicationVersion()
 
 except ImportError:
     # Replacement functions when not running in RS
     IN_RAYSTATION = False
+    RS_VERSION = "0.0"
 
     from .mock_objects import MockPatient
 

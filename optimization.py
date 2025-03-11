@@ -6,7 +6,8 @@ from System.Windows.Input import Keyboard, ModifierKeys
 from System.Windows.Controls import CheckBox
 from System import InvalidOperationException
 
-from .external import (RayWindow, CompositeAction, get_current, set_progress,
+from .external import (RayWindow, CompositeAction,
+                       get_current, set_progress, RS_VERSION,
                        Show_YesNo, Show_OK)
 from .validations import fix_jaw
 
@@ -22,10 +23,13 @@ DEFAULT_OPTS = {'iterations': 240,
                 'cycles': 6,
                 'dvhscaling': []}
 
+JAW_MOTION_NAME = {'12.1.0.1221': "Use limits as max",
+                   '14.0.100.0': 'UseLimitsAsMax'}
+
 BEAM_OPT_SETTINGS = {'OptimizationTypes': ['SegmentOpt', 'SegmentMU'],
                      'SelectCollimatorAngle': False,
                      'AllowBeamSplit': False,
-                     'JawMotion': "Use limits as max",
+                     'JawMotion': JAW_MOTION_NAME[RS_VERSION],
                      'LeftJaw': -20,
                      'RightJaw': 20,
                      'TopJaw': 18,
@@ -358,15 +362,16 @@ class BulkOptimizer():
         return runbulkopt(self.options, self.mindvhlimiters, self.optimizer)
 
 
-def buildoptsettings(beamsetting):
+def buildoptsettings(beamsetting, machine_data):
     opt_settings = BEAM_OPT_SETTINGS.copy()
     arc_opt_settings = ARC_OPT_SETTINGS.copy()
 
     beam = beamsetting.ForBeam
 
     machinename = beam.MachineReference.MachineName
-    mach_db = get_current("MachineDB")
-    machine = mach_db.GetTreatmentMachine(machineName=machinename)
+    # mach_db = get_current("MachineDB")
+    # machine = mach_db.GetTreatmentMachine(machineName=machinename)
+    machine = machine_data[machinename]
 
     yjawlimit = machine.Physics.JawPhysics.MaxBottomJawPos - DYN_JAW_SHIELD
     xjawlimit = machine.Physics.JawPhysics.MaxRightJawPos
@@ -398,12 +403,13 @@ def buildoptsettings(beamsetting):
     return opt_settings, arc_opt_settings
 
 
-def update_machine_limits(current_opt):
+def update_machine_limits(current_opt, machine_data):
     # Set machine limits for all beams in current set.
 
     for tx_setup in current_opt.OptimizationParameters.TreatmentSetupSettings:
         for beamsetting in tx_setup.BeamSettings:
-            opt_settings, arc_opt_settings = buildoptsettings(beamsetting)
+            opt_settings, arc_opt_settings = buildoptsettings(beamsetting,
+                                                              machine_data)
 
             logger.debug(f'{opt_settings=}')
             logger.debug(f'{arc_opt_settings=}')
@@ -435,11 +441,18 @@ def runbulkopt(options, mindvhlimiters, current_opt): # noqa: 901
     actname = (f"Bulk Optimization "
                f"({cycleiters:d} iterations x {options['cycles']:d} runs)")
 
-    # Only run on first beam_set in opt. TODO: work with multibeamset opts.
-    # beam_set = current_opt.OptimizedBeamSets[0]
+    mach_db = get_current("MachineDB")
+    machinenames = {beamsetting.ForBeam.MachineReference.MachineName
+                    for tx_setup in
+                    current_opt.OptimizationParameters.TreatmentSetupSettings
+                    for beamsetting in tx_setup.BeamSettings}
+    machine_data = {machinename:
+                    mach_db.GetTreatmentMachine(machineName=machinename)
+                    for machinename in machinenames}
+
     with CompositeAction(actname):
 
-        update_machine_limits(current_opt)
+        update_machine_limits(current_opt, machine_data)
 
         for beam_set in current_opt.OptimizedBeamSets:
             beam_set.SetAutoScaleToPrimaryPrescription(AutoScale=False)
