@@ -8,6 +8,7 @@ from .couchtop import CouchTopCollection
 import logging
 import sys
 import inspect
+import warnings
 from collections import defaultdict
 
 _logger = logging.getLogger(__name__)
@@ -226,9 +227,12 @@ def validate_collision(plan, beam_set, silent=False, full_arc_check=False):
     can_update_comment = beamset_validation_check(beam_set)
 
     if silent:
+        if full_arc_check:
+            warnings.warn("full_arc_check is not supported in silent mode.",
+                          RuntimeWarning)
         coll_result = check_collision(plan, beam_set, silent=True,
                                       retain=False, retain_on_fail=False,
-                                      full_arc_check=full_arc_check)
+                                      full_arc_check=False)
     else:
         coll_result = check_collision_dialog(plan, beam_set,
                                              full_arc_check=full_arc_check)
