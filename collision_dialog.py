@@ -255,11 +255,11 @@ class Status_LED(Ellipse):
             map(reversed, self._status_to_color_map.items()))
 
     @property
-    def _status(self):
+    def status(self):
         return self._color_map_to_status[self._color]
 
-    @_status.setter
-    def _status(self, status):
+    @status.setter
+    def status(self, status):
         _logger.debug(f"{self}: {status=}")
         color = self._status_to_color_map['Unknown']
         if status in self._status_to_color_map:
@@ -325,11 +325,11 @@ class BeamIconStackPanel(StackPanel):
 
     @property
     def beam_status(self):
-        return self._icon._status
+        return self._icon.status
 
     @beam_status.setter
     def beam_status(self, status):
-        self._icon._status = status
+        self._icon.status = status
 
     @property
     def colliders(self):
@@ -339,10 +339,8 @@ class BeamIconStackPanel(StackPanel):
     def colliders(self, colliders):
         if not colliders:
             colliders = ''
-        if self._colliders != f'{colliders}':
-            self._colliders = f'{colliders}'
-            self.ToolTip.Visibility = (Visibility.Visible if self._colliders
-                                       else Visibility.Collapsed)
+
+        self._colliders = f'{colliders}'
 
         if self._colliders:
             content = f'Collisions with: {self._colliders}'
@@ -350,6 +348,7 @@ class BeamIconStackPanel(StackPanel):
             self.ToolTip.Content = content
             self.beam_status = 'Collision'
         else:
+            self.ToolTip.Content = 'No collisions'
             self.beam_status = 'OK'
 
 
@@ -370,7 +369,7 @@ class CollisionDetectionDialogWindow(RayWindow):
     checkBox = None  # CheckBox
     Eval_ROIs = None  # ListBox
     CheckPerBeam = None  # Button
-    Main_Status_StackPanel = None # StackPanel
+    Main_Status_StackPanel = None  # StackPanel
     # Resources: self.Resources['']
 
     beam_set = None
@@ -432,37 +431,34 @@ class CollisionDetectionDialogWindow(RayWindow):
             # Build the tree of isocenters, and populate the iso_beams
             # dictionary with an entry for each beam at this isocenter named
             # after the actual beam name (enforced unique in RS)
-            beamname = nominal_beam_name(beam)
+            gantry_name = nominal_beam_name(beam)
             iso_name = nominal_iso_name(beam.Isocenter)
+            stack_label = f'{beam.Name} ({gantry_name})'
             beam_dict = {'name': beam.Name,
-                         'stack': None,
+                         'stack': BeamIconStackPanel(stack_label),
                          'beam': beam,
-                         'gantry': beamname}
+                         'gantry': gantry_name}
+
             if iso_name not in iso_beams:
+                iso_item = BeamIsoTreeViewItem(iso_name)
+                self.BeamTreeView.Items.Add(iso_item)
                 iso_beams[iso_name] = {
-                    'viewitem': BeamIsoTreeViewItem(iso_name),
+                    'viewitem': iso_item,
                     'beams': {beam.Name: beam_dict}}
             else:
+                iso_item = iso_beams[iso_name]['viewitem']
                 iso_beams[iso_name]['beams'][beam.Name] = beam_dict
 
+            iso_item.AddChild(beam_dict['stack'])
+
             self.beam_items.append(beam_dict)
-
-        for iso_dict in iso_beams.values():
-            iso_item = iso_dict['viewitem']
-            for name, beam_dict in iso_dict['beams'].items():
-                beam_stack = BeamIconStackPanel(name)
-                beam_dict['stack'] = beam_stack
-
-                iso_item.AddChild(beam_stack)
-
-            self.BeamTreeView.Items.Add(iso_item)
 
         self.iso_beam_items = iso_beams
         Application.DoEvents()
 
     def update_all_leds(self, status):
         _logger.debug(f"Updating all leds to {status}")
-        self.Collision_LED._status = status
+        self.Collision_LED.status = status
         for stack in [bdict['stack']
                       for iso in self.iso_beam_items.values()
                       for bdict in iso['beams'].values()]:
@@ -574,27 +570,23 @@ class CollisionDetectionDialogWindow(RayWindow):
         _logger.debug(f"{sender=} {event=}")
         self.update_all_leds('Unknown')
         overlaps = self.overlaps
-        beams = overlaps.colliders_by_beam
+        gantry2coll = overlaps.colliders_by_gantry
+
+        _logger.debug(f"Collision status: {overlaps=}")
 
         if not overlaps.hasCollision:
-            _logger.debug(f"No collision {overlaps=}")
-            self.update_all_leds('OK')
-        else:
-            # Might be a collision, check by beam
-            _logger.debug(f"Collision {overlaps=}")
-            for beam_dict in self.beam_items:
-                gantry_name = overlaps.beam_map[beam_dict['name']]
-                try:
-                    beam_dict['stack'].colliders = beams[gantry_name]
-                    if beam_dict['stack'].colliders:
-                        self.Collision_LED._status = 'Collision'
-                except KeyError:
-                    logging.debug(f"Couldn't find beam with name {beamname} "
-                                  "in the beam_stack list")
+            self.Collision_LED.status = "OK"
+
+        for beam_dict in self.beam_items:
+            gantry_name = overlaps.beam_map[beam_dict['name']]
+            try:
+                beam_dict['stack'].colliders = gantry2coll[gantry_name]
+            except KeyError:
+                logging.debug(f"Couldn't find {gantry_name} in colliders.")
 
         cbct = None
         if __FAB__ in overlaps.beam_map:
-            cbct = beams[overlaps.beam_map[__FAB__]]
+            cbct = gantry2coll[overlaps.beam_map[__FAB__]]
         _logger.debug(f"{cbct=}")
         self.CBCT_Collider_LED.colliders = cbct
 

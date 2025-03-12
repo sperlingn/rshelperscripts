@@ -218,7 +218,7 @@ def validate_jaw(plan, beam_set, silent=False, fix_errors=False):
     return validation
 
 
-def validate_collision(plan, beam_set, silent=False, full_arc_check=False):
+def validate_collision(plan, beam_set, silent=False, full_arc_check=True):
     # plan: Raystation Plan object to check on
     # beam_set: Raystation Beamset object to check all beams for
     # silent: Supress any dialogs/GUIs (default: False)

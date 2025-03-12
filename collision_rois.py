@@ -102,10 +102,12 @@ class Overlaps(dict):
 
     _gantries = None
     _builder = None
-    beams = None # Beams to check against (set if passed beamset)
-    beam_map = None # Dict mapping beams to the rois used for collision
+    beams = None  # Beams to check against (set if passed beamset)
+    beam_map = None  # Dict mapping beams to the rois used for collision
 
     # Dict of dicts of bools.
+    #  i.e. Overlaps[Collider][Gantry] = bool(Collided)
+    # e.g. Overlaps['External']['T10 G181-179'] = True
     # Adds a helper function to check any and all for all of them
     # also function to return those that fail as a tuple
     # Could be done with numpy or pandas much more simply, but that would
@@ -136,7 +138,6 @@ class Overlaps(dict):
                                Isocenter=self.beams[0].Isocenter,
                                CouchRotationAngle=0.0)
                 self.beams.append(fab)
-
 
             self._builder = ROI_Builder(beam_set=beam_set,
                                         default_opts=self.coll_create_opts)
@@ -182,7 +183,14 @@ class Overlaps(dict):
 
     @property
     def isFalse(self):
-        return not any([any(f.values()) for f in self.values()])
+        # Right now this will try to exclude the beam used for full arc
+        # evaluation if it was added.
+        gantry_colliders = {gantry for beamname, gantry
+                            in self.beam_map.items() if beamname != __FAB__}
+        return not any([any([collides for gantry_roi, collides
+                             in collider.items()
+                             if gantry_roi in gantry_colliders])
+                        for collider in self.values()])
 
     @property
     def hasCollision(self):
@@ -209,7 +217,7 @@ class Overlaps(dict):
         return out
 
     @property
-    def colliders_by_beam(self):
+    def colliders_by_gantry(self):
         by_beams = self.by_beams
         return {beam_roi: [collider_roi for collider_roi in by_beams[beam_roi]
                            if by_beams[beam_roi][collider_roi]]
