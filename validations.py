@@ -239,9 +239,11 @@ def validate_collision(plan, beam_set, silent=False, full_arc_check=True):
 
     update_comment = can_update_comment and coll_result['UpdateComment']
 
+    message = coll_result['overlaps'] or 'SUCCESS: No collision'
+
     return ValidationResult(passes=not coll_result['status'],
                             violation=coll_result,
-                            message=coll_result['overlaps'],
+                            message=message,
                             key=COLLISION_KEY,
                             update_comment=update_comment)
 
@@ -261,20 +263,40 @@ def validate_couch(plan, beam_set, silent=False, icase=None):
 
         built_tops = tops.built_tops
 
+        if len(built_tops) > 1:
+            unique_built_tops = []
+            # Get the list of tops that aren't a complete subset of other tops
+            for t1, t2 in [(t1, t2) for t1 in built_tops for t2 in built_tops
+                           if t1 != t2]:
+                # If the set of ROI names in t1 is a proper superset of t2,
+                # then add t1 to the list.  This will handle cases where the
+                # H&N board tops include the normal couch countours as well as
+                # the H&N board.
+                if t1.ROI_Names > t2.ROI_Names:
+                    unique_built_tops.append(t1)
+
+            built_tops = unique_built_tops
+
         if not expected_top.isBuilt:
-            violation = (f'Expected top {expected_top.Name} is not present.\n'
-                         f'Status:\n'
-                         f'\tRois present: {expected_top.isPresent}\n'
-                         f'\tRois built: {expected_top.isBuilt}')
+            violation = 'MISSING_TOP'
+            message = (f'FAILURE: Expected top {expected_top.Name} missing.\n'
+                       f'Status:\n'
+                       f'\tRois present: {expected_top.isPresent}\n'
+                       f'\tRois built: {expected_top.isBuilt}')
         elif len(built_tops) != 1:
-            violation = f'Too many tops in plan.  Found {len(built_tops)}:\n'
-            violation += '\n'.join([f'{top.Name}' for top in built_tops])
+            violation = 'TOO_MANY_TOPS'
+            message = f'Too many tops in plan.  Found {len(built_tops)}:\n'
+            message += '\n'.join([f'{top.Name}' for top in built_tops])
+
         else:
             violation = None
-    except Exception as e:
-        violation = f'Had exception in couch identification:\n{e}'
+            message = f'SUCCESS: Found Top {built_tops[0]}'
 
-    return ValidationResult(violation=violation, key=key)
+    except Exception as e:
+        violation = 'EXCEPTION'
+        message = f'FAILURE: Had exception in couch identification:\n{e}'
+
+    return ValidationResult(violation=violation, message=message, key=key)
 
 
 def run_all_validations(plan, beam_set=None, silent=False, show_on_fail=True):
