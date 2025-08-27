@@ -761,6 +761,19 @@ class _M():
     def __iter__(self):
         return self.matrix.__iter__()
 
+    @property
+    def rs_matrix(self):
+        """
+        Get matrix in a dict formatted as {'M<R><C>': value}
+        e.g.:
+        m = {
+        'M11':row1col1,  'M12': row1col2, ...,
+        'M21': row2col1, ...}
+        """
+        return {'M{}{}'.format(ri+1, ci+1): float(value)
+                for ri, row in enumerate(self.matrix)
+                for ci, value in enumerate(row)}
+
 
 class AffineMatrix():
     x = 0
@@ -840,6 +853,7 @@ class AffineMatrix():
 
     @property
     def matrix(self):
+        # Return a 4x4 matrix including translations as a list of lists.
         self._rebuild_matrices()
         m = _M(self._rot_matrix)
         return (list(map(list.__add__, m, [[v] for v in self._trans]))
@@ -871,15 +885,15 @@ class AffineMatrix():
         'M31': -sb,   'M32': cb*sg,          'M33': cb*cg,          'M34': z,
         'M41': 0,     'M42': 0,              'M43': 0,              'M44': 1}
         """
-        m = self.matrix
-        odict = {'M{}{}'.format(ri+1, ci+1): float(value)
-                 for ri, row in enumerate(m)
-                 for ci, value in enumerate(row)}
-
-        return odict
+        return {'M{}{}'.format(ri+1, ci+1): float(value)
+                for ri, row in enumerate(self.matrix)
+                for ci, value in enumerate(row)}
 
     def __repr__(self):
         return '{}({})'.format(self.__class__.__name__, repr(self.matrix))
 
     def __str__(self):
         return '\n'.join('\t'.join(f'{c:.2f}' for c in r) for r in self.matrix)
+
+
+M3 = _M
