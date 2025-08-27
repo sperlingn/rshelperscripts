@@ -53,7 +53,7 @@ class ROI_Builder():
     def CreateROI(self, name=None, opts=None, **opts_ovr):
         create_opts = LimitedDict(self.default_opts)
 
-        name = name if name else create_opts['Name']
+        name = opts_ovr.pop('Name', name if name else create_opts['Name'])
 
         create_opts.update(opts)
         create_opts.update(opts_ovr)
@@ -79,7 +79,7 @@ class ROI_Builder():
         # use name, or get name from kwarg 'Name', or use ROI_1 (also force
         # removal of 'Name' from opts_ovr kwargs to ensure we don't change the
         # name of an existing ROI in this script.
-        name = [str(s) for s in [name, opts_ovr.pop('Name', 'ROI_1')] if s]
+        name = [str(s) for s in [name, opts_ovr.pop('Name', 'ROI_1')] if s][0]
         if name in self.pm.RegionsOfInterest.Keys:
             roi = self.pm.RegionsOfInterest[name]
             geometries = {ss.OnExamination: ss.RoiGeometries[roi.Name]
