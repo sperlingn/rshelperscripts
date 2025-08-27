@@ -66,7 +66,20 @@ class ROI_Builder():
 
         return ROI(roi, geometries)
 
-    def GetOrCreateROI(self, name, opts=None, **opts_ovr):
+    def GetOrCreateROI(self, name=None, opts=None, **opts_ovr):
+        """If the ROI already exists, return the roi wrapped in ROI class,
+        otherwise return a new ROI.
+
+        Keyword arguments:
+            name -- The new roi Name.
+            opts -- Dictionary of options to set.
+            ** -- Any other keyword arguments are filtered for applicability
+               and applied to the function call for roi creation function."""
+
+        # use name, or get name from kwarg 'Name', or use ROI_1 (also force
+        # removal of 'Name' from opts_ovr kwargs to ensure we don't change the
+        # name of an existing ROI in this script.
+        name = [str(s) for s in [name, opts_ovr.pop('Name', 'ROI_1')] if s]
         if name in self.pm.RegionsOfInterest.Keys:
             roi = self.pm.RegionsOfInterest[name]
             geometries = {ss.OnExamination: ss.RoiGeometries[roi.Name]
@@ -109,6 +122,15 @@ class ROI():
                 self._geometries[get_current('Examination')] = context
         else:
             self._geometries[get_current('Examination')] = None
+
+        # If we have an ROI set, link all of the functions for that ROI to this
+        # wrapper class instance to allow this to act like it is an ROI object
+        # without subclassing (since we don't have the superclass in python).
+        if self._roi:
+            for fn in [f for f in dir(self._roi)
+                       if (callable(getattr(self._roi, f))
+                           and not (hasattr(self, f)))]:
+                setattr(self, fn, getattr(self._roi, fn))
 
     def create_box(self, size=1, center=0, exam=None, **kwargs):
         params = LimitedDict({'Size': point(size),
@@ -214,6 +236,10 @@ class ROI():
     @Name.setter
     def Name(self, Name):
         self._roi.Name = Name
+
+    @property
+    def CurrentGeometry(self):
+        return self._geometries[get_current('Examination')]
 
     def DeleteRoi(self):
         del self._geometries
