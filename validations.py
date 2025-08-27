@@ -5,6 +5,7 @@ from .case_comment_data import (set_validation_comment,
 from .collision_rois import check_collision
 from .collision_dialog import check_collision_dialog
 from .couchtop import CouchTopCollection
+from .plans import rename_beams
 import logging
 import sys
 import inspect
@@ -18,6 +19,7 @@ JAW_LIMIT = 0.5
 JAW_KEY = 'Jaw'
 COLLISION_KEY = 'Collision'
 COUCH_KEY = 'Couchtop'
+BEAMNAME_KEY = 'BeamName'
 
 
 class ValidationResult:
@@ -295,6 +297,31 @@ def validate_couch(plan, beam_set, silent=False, icase=None):
     except Exception as e:
         violation = 'EXCEPTION'
         message = f'FAILURE: Had exception in couch identification:\n{e}'
+
+    return ValidationResult(violation=violation, message=message, key=key)
+
+
+def validate_beamname(plan, beam_set, silent=False, icase=None):
+    key = BEAMNAME_KEY
+
+    icase = icase if icase is not None else get_current('Case')
+
+    try:
+        invalid_names = rename_beams(beam_set, icase, dialog=not silent,
+                                     do_rename=False)
+        if invalid_names and any(invalid_names.values()):
+            violation = 'BEAM_NAMES'
+            message = ('FAILURE: The following beams are not named following'
+                       'the standard convention:\n'
+                       'NAME -- Expected')
+            message += '\n'.join([f'{name} -- {invalid_names[name]}'
+                                  for name in invalid_names])
+        else:
+            violation = None
+            message = 'SUCCESS: All beams named in accordance with standards.'
+    except Exception as e:
+        violation = 'EXCEPTION'
+        message = f'FAILURE: Had exception in beam name validation:\n{e}'
 
     return ValidationResult(violation=violation, message=message, key=key)
 

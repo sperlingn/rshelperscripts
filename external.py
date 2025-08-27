@@ -1389,7 +1389,7 @@ class BeamReorderDialog(GenericReorderDialog):
     @property
     def lowest_n(self):
         try:
-            lowest_n = min([beam.Number for beam in self._list_in.items()])
+            lowest_n = min([beam.Number for beam in self._list_in.values()])
         except (ValueError, AttributeError):
             lowest_n = 1
         return lowest_n
@@ -1412,6 +1412,9 @@ class BeamReorderDialog(GenericReorderDialog):
             beam = self._list_in[item.Tag]
             # Add 100 to the number so we don't break things.
             beam.Number = 100 + beam_start + i
+        for item in self.ItemListBox.Items:
+            # Take the 100 back off, shouldn't have a collision
+            self._list_in[item.Tag].Number -= 100
 
 
 class SegmentReorderDialog(GenericReorderDialog):
@@ -1551,6 +1554,29 @@ class SegmentReorderDialog(GenericReorderDialog):
                                             self.ItemListBox.Items)):
             seg_in = self._list_in[item.Tag]
             seg_in.CopyTo(seg_out)
+
+
+def renumber_beams(beamset, dialog=False):
+    name_map = {beam.Name: beam.Number for beam in beamset.Beams}
+    beam_nos = list(name_map.values())
+    non_sequential = any(map(lambda x, y: y != x+1,
+                             beam_nos[:-1], beam_nos[1:]))
+
+    # Map of beam names to original beam numbers
+
+    if dialog:
+        res = {}
+        dlg = BeamReorderDialog(beamset.Beams, res)
+        if dlg.ShowDialog():
+            non_sequential = False
+
+    if non_sequential:
+        # Assume beams are ordered correctly, but some numbers were missed,
+        # renumber from the first beam up.
+        for i, beam in enumerate(beamset.Beams):
+            beam.Number = beam_nos[0] + i
+
+    return {name_map[name]: beamset.Beams[name].Number for name in name_map}
 
 
 def obj_name(obj, name_identifier_object='.', strict=False):

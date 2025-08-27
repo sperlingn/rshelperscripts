@@ -3,13 +3,19 @@ from .clinicalgoals import copy_clinical_goals
 from .external import (CompositeAction as CompositeAction, ObjectDict,
                        params_from_mapping, get_machine, obj_name, clamp,
                        rs_getattr, rs_hasattr, sequential_dedup_return_list,
-                       dup_object_param_values, CallLaterList, get_unique_name)
+                       dup_object_param_values, CallLaterList, get_unique_name,
+                       Show_OK, renumber_beams)
 from .examinations import duplicate_exam as _duplicate_exam
 from .roi import ROI_Builder
+from .i18n import BEAMNAME_QUADRANT_TO_NAME, BEAMNAME_BREAST_SC_PA
 from difflib import get_close_matches
 # from .points import point as _point
 
 _logger = logging.getLogger(__name__)
+
+# Anything within BEAM_ANGLE_PROX_LIMIT of a cardinal angle is presumed
+#  to be that angle.
+BEAM_ANGLE_PROX_LIMIT = 5.1
 
 cll = CallLaterList()
 
@@ -1017,3 +1023,112 @@ def calc_max_heart_distance(bs, heart_name="Heart"):
         pass
 
     return mhds
+
+
+def get_imrt_beamname(beam, machine, addtableangle=False):
+    beam_values = machine.get_beam_presentation_vals(beam)
+    table_text = f"T{beam_values['Couch']:0.0f} " if addtableangle else ""
+    g_start = f"G{beam_values['Gantry']:0.0f}"
+    g_end = (f"-{beam_values['GantryStop']:0.0f}" if
+             beam_values['GantryStop'] is not None else "")
+
+    return f"{beam.Number} {table_text}{g_start}{g_end}"
+
+
+def get_3d_beamname(beam, machine, site, add_quality):
+    pt_pos = beam.PatientPosition
+    near_cardinal = ((beam.GantryAngle % 90) % (90 - BEAM_ANGLE_PROX_LIMIT)
+                     < BEAM_ANGLE_PROX_LIMIT)
+    norm_angle = ((-1 if 'Feet' in pt_pos else 1) * beam.GantryAngle
+                  + (180 if 'Prone' in pt_pos else 0))
+    beam_quad = int((((norm_angle + BEAM_ANGLE_PROX_LIMIT) // 90) % 4)
+                    + near_cardinal * 4)
+
+    direction_name = BEAMNAME_QUADRANT_TO_NAME[beam_quad]
+    if 'Breast' in site:
+        inf_jaw = 2 if 'Head' in pt_pos else 3
+
+        is_half_inf = abs(beam.Segments[0].JawPositions[inf_jaw]) < 0.5
+        # Breast, check for 4fld and name best we can.
+        if is_half_inf:
+            direction_name = BEAMNAME_BREAST_SC_PA[int('PO' in direction_name)]
+        else:
+            # Inferior jaw is not at 0(ish) so this must be the tangents
+            # Name with "1 LAO 18x" e.g.
+            if add_quality:
+                direction_name += f' {beam.BeamQualityId}x'
+
+    return f"{beam.Number} {direction_name}"
+
+
+def set_beamnames_to_number(beamset):
+    name_map = {beam.Name: str(beam.Number) for beam in beamset.Beams}
+
+    for beamname in name_map:
+        while name_map[beamname] in name_map:
+            # Need to use an intermediary values
+            name_map[beamname] += '_'
+
+    for beamname in name_map:
+        beamset.Beams[beamname].Name = name_map[beamname]
+
+    for beam in beamset.Beams:
+        if '_' in beam.Name:
+            beam.Name = str(beam.Number)
+
+
+def rename_beams(beamset, icase, dialog=True, do_rename=True):
+    # Example beam name format:
+    # "1 RAO"
+    # "5 T0 G121-330"
+    # "16 T270 G181-359"
+
+    machine = get_machine(beamset)
+    site = icase.BodySite
+
+    if (('Arc' in beamset.DeliveryTechnique or
+            'Imrt' in beamset.PlanGenerationTechnique)):
+        addtableangle = any([beam.CouchRotationAngle != 0 for
+                             beam in beamset.Beams])
+        name_map = {beam.Number:
+                    {'Name': beam.Name,
+                     'NewName': get_imrt_beamname(beam, machine,
+                                                  addtableangle)}
+                    for beam in beamset.Beams}
+    else:
+        # 3D Conformal
+        add_quality = any([beam.BeamQualityId !=
+                           beamset.Beams[0].BeamQualityId
+                           for beam in beamset.Beams])
+        name_map = {beam.Number:
+                    {'Name': beam.Name,
+                     'NewName': get_3d_beamname(beam, machine,
+                                                site, add_quality)}
+                    for beam in beamset.Beams}
+
+    if do_rename:
+        try:
+            with CompositeAction('Rename all beams in beamset '
+                                 f'"{beamset.DicomPlanLabel}"'):
+
+                orig_names = {beam.Number: beam.Name for beam in beamset.Beams}
+                number_map = renumber_beams(beamset, dialog)
+                set_beamnames_to_number(beamset)
+
+                for beam in beamset.Beams:
+                    beam.Name = name_map[number_map[beam.Number]]['Name']
+
+                if any([orig_names[number_map[beam.Number]] !=
+                        name_map[number_map[beam.Number]]]):
+                    # No changes made, bubble out to keep from changing plan
+                    raise Warning("Beams alredy correct, No changes made.")
+                else:
+                    return False
+        except Warning as w:
+            if dialog:
+                Show_OK(w, "Beam Rename")
+                return True
+
+    else:
+        return {beam['Name']: beam['Name'] != beam['NewName']
+                for beam in name_map.values()}
