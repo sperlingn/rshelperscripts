@@ -143,7 +143,7 @@ class MB_Options(IntEnum):
     ServiceNotification = 2097152
 
 
-def _Show_MB(message, caption, *args, ontop=False):
+def _Show_MB(message, caption="Message", *args, ontop=False):
     opt = MB_Options.DefaultDesktopOnly if ontop else MB_Options.None_
     res = _MessageBox.Show(f"{message}", f"{caption}", *args, opt)
     try:
@@ -154,30 +154,30 @@ def _Show_MB(message, caption, *args, ontop=False):
         return res
 
 
-def Show_OK(message, caption, ontop=False, icon=MB_Icon.None_,
+def Show_OK(message, caption="OK", ontop=False, icon=MB_Icon.None_,
             defaultResult=MB_Result.None_):
     button = MB_Button.OK
     return _Show_MB(message, caption, button, icon, defaultResult, ontop=ontop)
 
 
-def Show_Warning(message, caption, ontop=True):
+def Show_Warning(message, caption="Warning", ontop=True):
     return Show_OK(message, caption, ontop, icon=MB_Icon.Warning_)
 
 
-def Show_OKCancel(message, caption, ontop=False, icon=MB_Icon.None_,
-                  defaultResult=MB_Result.None_):
+def Show_OKCancel(message, caption="OK or Cancel?", ontop=False,
+                  icon=MB_Icon.None_, defaultResult=MB_Result.None_):
     button = MB_Button.OKCancel
     return _Show_MB(message, caption, button, icon, defaultResult, ontop=ontop)
 
 
-def Show_YesNo(message, caption, ontop=False, icon=MB_Icon.None_,
+def Show_YesNo(message, caption="Yes or No?", ontop=False, icon=MB_Icon.None_,
                defaultResult=MB_Result.None_):
     button = MB_Button.YesNo
     return _Show_MB(message, caption, button, icon, defaultResult, ontop=ontop)
 
 
-def Show_YesNoCancel(message, caption, ontop=False, icon=MB_Icon.None_,
-                     defaultResult=MB_Result.None_):
+def Show_YesNoCancel(message, caption="Yes, No, or Cancel?", ontop=False,
+                     icon=MB_Icon.None_, defaultResult=MB_Result.None_):
     button = MB_Button.YesNoCancel
     return _Show_MB(message, caption, button, icon, defaultResult, ontop=ontop)
 
