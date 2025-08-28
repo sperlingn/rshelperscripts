@@ -403,7 +403,7 @@ def run_all_validations(plan, beamset=None, silent=False, show_on_fail=True,
 
     fails = []
     not_updatable = defaultdict(list)
-    with CompositeAction("Update all validations in plan [{_name(plan)}]"):
+    with CompositeAction(f"Update all validations in plan [{_name(plan)}]"):
         for name, validation_fn in validations.items():
             _logger.info(f'Running {name}.')
             for bs_iter in beamsets:
