@@ -1130,5 +1130,6 @@ def rename_beams(beamset, icase, dialog=True, do_rename=True):
                 return True
 
     else:
-        return {beam['Name']: beam['Name'] != beam['NewName']
-                for beam in name_map.values()}
+        return {beam['Name']: beam['NewName']
+                for beam in name_map.values()
+                if beam['Name'] != beam['NewName']}

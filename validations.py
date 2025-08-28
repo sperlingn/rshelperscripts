@@ -29,14 +29,18 @@ class ValidationResult:
     key = ""
     fixed = False
     update_comment = True
+    plan = None  # Name of plan
+    beamset = None  # Name of beamset
 
     def __init__(self, passes=None, violation=None, message=None, key='Unk',
-                 update_comment=True):
+                 update_comment=True, plan=None, beamset=None):
         self._passes = passes
         self.violation = violation
         self.key = key
         self.update_comment = update_comment
         self.message = str(message if message is not None else violation)
+        self.plan = obj_name(plan)
+        self.beamset = obj_name(beamset)
 
     @property
     def passes(self):
@@ -47,10 +51,8 @@ class ValidationResult:
         return bool(self.passes)
 
     def __str__(self):
-        if self.fixed:
-            return f'{self.message} (Corrected)'
-        else:
-            return self.message
+        return (f'[{self.plan}:{self.beamset}]{"(C)" if self.fixed else ""}\n'
+                f'{self.message}')
 
     def __repr__(self):
         return (f'{self.__class__.__name__}('
@@ -58,7 +60,9 @@ class ValidationResult:
                 f'violation="{self.violation}", '
                 f'message="{self.message}", '
                 f'key={self.key}, '
-                f'update_comment={self.update_comment})')
+                f'update_comment={self.update_comment},'
+                f'plan={self.plan}'
+                f'beamset={self.beamset})')
 
 
 class SegmentViolation:
@@ -165,9 +169,9 @@ class ViolationDict(defaultdict):
                     self[beam][segment].fix_violations()
 
 
-def check_jaw(beam_set):
+def check_jaw(beamset):
     violations = ViolationDict()
-    for beam in beam_set.Beams:
+    for beam in beamset.Beams:
         for seg in beam.Segments:
             if min(abs(seg.JawPositions[0] - seg.JawPositions[1]),
                    abs(seg.JawPositions[2] - seg.JawPositions[3])) < JAW_LIMIT:
@@ -176,15 +180,16 @@ def check_jaw(beam_set):
     return violations
 
 
-def fix_jaw(beam_set):
+def fix_jaw(beamset):
     with CompositeAction('Fix Jaw Gap'):
-        errorlist = check_jaw(beam_set)
+        errorlist = check_jaw(beamset)
         errorlist.fix_violations()
     return errorlist
 
 
-def validate_jaw(plan, beam_set, silent=False, fix_errors=False):
-    errorlist = check_jaw(beam_set)
+def validate_jaw(plan, beamset, silent=False, fix_errors=False,
+                 **kwargs):
+    errorlist = check_jaw(beamset)
     validation = ValidationResult(violation=errorlist, key=JAW_KEY)
     if not silent:
         if validation:
@@ -220,23 +225,24 @@ def validate_jaw(plan, beam_set, silent=False, fix_errors=False):
     return validation
 
 
-def validate_collision(plan, beam_set, silent=False, full_arc_check=True):
+def validate_collision(plan, beamset, silent=False, full_arc_check=True,
+                       **kwargs):
     # plan: Raystation Plan object to check on
-    # beam_set: Raystation Beamset object to check all beams for
+    # beamset: Raystation Beamset object to check all beams for
     # silent: Supress any dialogs/GUIs (default: False)
     # full_arc_check: Add a check for a 360 arc at 0 couch (default: False)
 
-    can_update_comment = beamset_validation_check(beam_set)
+    can_update_comment = beamset_validation_check(beamset)
 
     if silent:
         if full_arc_check:
             warnings.warn("full_arc_check is not supported in silent mode.",
                           RuntimeWarning)
-        coll_result = check_collision(plan, beam_set, silent=True,
+        coll_result = check_collision(plan, beamset, silent=True,
                                       retain=False, retain_on_fail=False,
                                       full_arc_check=False)
     else:
-        coll_result = check_collision_dialog(plan, beam_set,
+        coll_result = check_collision_dialog(plan, beamset,
                                              full_arc_check=full_arc_check)
 
     update_comment = can_update_comment and coll_result['UpdateComment']
@@ -250,11 +256,12 @@ def validate_collision(plan, beam_set, silent=False, full_arc_check=True):
                             update_comment=update_comment)
 
 
-def validate_couch(plan, beam_set, silent=False, icase=None):
+def validate_couch(plan, beamset, silent=False, icase=None,
+                   **kwargs):
     key = COUCH_KEY
-    cp = beam_set.PatientSetup.CollisionProperties
+    cp = beamset.PatientSetup.CollisionProperties
     structure_set = cp.ForExaminationStructureSet
-    machine = beam_set.MachineReference.MachineName
+    machine = beamset.MachineReference.MachineName
 
     icase = icase if icase is not None else get_current('Case')
 
@@ -301,19 +308,21 @@ def validate_couch(plan, beam_set, silent=False, icase=None):
     return ValidationResult(violation=violation, message=message, key=key)
 
 
-def validate_beamname(plan, beam_set, silent=False, icase=None):
+def validate_beamname(plan, beamset, silent=False, icase=None,
+                      **kwargs):
     key = BEAMNAME_KEY
 
     icase = icase if icase is not None else get_current('Case')
 
     try:
-        invalid_names = rename_beams(beam_set, icase, dialog=not silent,
+        invalid_names = rename_beams(beamset, icase, dialog=not silent,
                                      do_rename=False)
-        if invalid_names and any(invalid_names.values()):
+        if invalid_names:
             violation = 'BEAM_NAMES'
-            message = ('FAILURE: The following beams are not named following'
-                       'the standard convention:\n'
-                       'NAME -- Expected')
+            message = ('FAILURE: The following beam names do not follow'
+                       ' convention.\n'
+                       '\n'
+                       'Name -- Convention Name\n')
             message += '\n'.join([f'{name} -- {invalid_names[name]}'
                                   for name in invalid_names])
         else:
@@ -326,30 +335,35 @@ def validate_beamname(plan, beam_set, silent=False, icase=None):
     return ValidationResult(violation=violation, message=message, key=key)
 
 
-def run_all_validations(plan, beam_set=None, silent=False, show_on_fail=True):
+def run_all_validations(plan, beamset=None, silent=False, show_on_fail=True,
+                        icase=None):
     # Runs all validations currently in the scope of the file.
     validations = {name: obj for name, obj
                    in inspect.getmembers(sys.modules[__name__])
                    if (inspect.isfunction(obj) and name[0:9] == 'validate_')}
 
-    # If we aren't given a beam_set, do it for all of the beamsets in the plan.
-    if beam_set:
-        beam_sets = [beam_set]
+    # If we aren't given a beamset, do it for all of the beamsets in the plan.
+    if beamset:
+        beamsets = [beamset]
     else:
-        beam_sets = [bs for bs in plan.BeamSets]
+        beamsets = [bs for bs in plan.BeamSets]
 
     fails = []
     not_updatable = defaultdict(list)
-    try:
-        for name, validation_fn in validations.items():
-            _logger.info(f'Running {name}.')
-            for bs_iter in beam_sets:
-                status = validation_fn(plan, bs_iter, silent)
+    for name, validation_fn in validations.items():
+        _logger.info(f'Running {name}.')
+        for bs_iter in beamsets:
+            try:
+                status = validation_fn(plan=plan,
+                                       beamset=bs_iter,
+                                       silent=silent,
+                                       icase=icase)
                 if not status:
                     fails.append(status)
 
-                _logger.info(f'Updating validation status of {status.key}'
-                             f' for plan [{obj_name(plan)}] to {status}.')
+                _logger.info(f'Updating validation status of {status.key} for'
+                             f' [{obj_name(plan)}:{obj_name(bs_iter)}]'
+                             f' to {status}.')
                 set_validation_comment(plan, bs_iter, status.key, bool(status))
                 if not beamset_validation_check(bs_iter):
                     _logger.info(f'beamset {obj_name(bs_iter)} is not saved,'
@@ -357,15 +371,16 @@ def run_all_validations(plan, beam_set=None, silent=False, show_on_fail=True):
                     ident = f'{obj_name(plan)} -- {obj_name(bs_iter)}'
                     not_updatable[ident].append(status)
 
-    except UserWarning as warn:
-        _logger.warning(f"Failed to check {bs_iter} in {plan}",
-                        exc_info=True)
-        Show_Warning(f"{warn}", "Can't Validate beamset.")
+            except UserWarning as warn:
+                _logger.warning(f"Failed to check {bs_iter} in {plan}",
+                                exc_info=True)
+                Show_Warning(f"{warn}", "Can't Validate beamset.")
+
+    _logger.debug(f"{fails=}")
 
     if silent and show_on_fail:
         # Silent, but still show message box on failure.
         if fails:
-            _logger.debug(f"{fails=}")
             message = (f'Failed to validate plan "{obj_name(plan)}".\n'
                        'Encountered the following failures:\n\n')
             message += '\n'.join([f'{f!s}' for f in fails])
