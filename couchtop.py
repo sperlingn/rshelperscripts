@@ -76,7 +76,7 @@ KNOWN_TOPS = {
          'tx_machines': 'Edge'},
     'TrueBeam Head & Neck Model':
         {'surface_roi': 'Surface Shell - TrueBeam',
-         'default_offset': {'x': -0.484, 'y': -2.25, 'z': 0.452},
+         'default_offset': {'x': -0.784, 'y': -2.25, 'z': 0.452},
          'tx_machines': 'TrueBeam'}
 }
 
@@ -189,36 +189,44 @@ def guess_couchtop_z(series):
         return couch_z
     except Exception:
         _logger.exception("Problem reading CT data")
-        return None
+
+    return None
 
 
-def guess_board_x_center(series, couch_y):
+def guess_board_x_center(series, couch_y, init_guess_z=None,
+                         y_avg=None, z_avg=None):
     search_y = couch_y + HN_SEARCH_DELTA
 
     init_guess = point(x=HN_H2_X, y=search_y)
     # TODO: Put this in a try-except and fail to a new z for
     # finding the width.
     # Need to account for top hole not being on image
-    guess_edges = series.find_edges(search_start=init_guess,
-                                    direction='-z', z_avg=0.05)
-    guess_holes = series.holes_by_width(edges=guess_edges,
-                                        width=HN_H_DIAM,
-                                        tolerance=1.)
-    if guess_holes:
-        init_guess.z = guess_holes[-1].center.z
+    if init_guess_z is None:
+        guess_edges = series.find_edges(search_start=init_guess,
+                                        direction='-z', z_avg=0.05)
+        guess_holes = series.holes_by_width(edges=guess_edges,
+                                            width=HN_H_DIAM,
+                                            tolerance=1.)
+        if guess_holes:
+            init_guess.z = guess_holes[-1].center.z
+        else:
+            init_guess.z = (series.Corner.z
+                            + (max(series.SlicePositions)/2))
+
     else:
-        init_guess.z = (series.Corner.z
-                        + (max(series.SlicePositions)/2))
+        init_guess.z = float(init_guess_z)
 
     width_edges = series.find_edges(search_start=init_guess,
-                                    direction='x')
+                                    direction='x',
+                                    y_avg=y_avg, z_avg=z_avg)
 
     if width_edges:
         x_offset = (width_edges[-1][1].x + width_edges[0][0].x)/2
     else:
         x_offset = 0
-        _logger.debug(f"{x_offset=}")
-        return x_offset
+
+    _logger.debug(f"{x_offset=}")
+    return x_offset
 
 
 def guess_machine(icase):
@@ -677,29 +685,31 @@ class CouchTop(object):
             x_offset = 0.
 
         search_y = couch_y - HN_SEARCH_DELTA
-        try:
-            search_point = point(x=x_offset, y=search_y)
-            _logger.debug(f"Searching for top center hole at {search_point}")
-            # Search for top center hole (tc)
-            tc_edges = series.find_edges(search_start=search_point,
-                                         direction='-z', z_avg=0.05)
+        search_point = point(x=x_offset, y=search_y)
+        _logger.debug(f"Searching for top center hole at {search_point}")
+        # Search for top center hole (tc)
+        tc_edges = series.find_edges(search_start=search_point,
+                                     direction='-z', z_avg=0.05)
 
-            tc_holes = series.holes_by_width(edges=tc_edges,
-                                             width=HN_H_DIAM,
-                                             tolerance=0.1)
+        tc_holes = series.holes_by_width(edges=tc_edges,
+                                         width=HN_H_DIAM,
+                                         tolerance=0.1)
 
-            tc_holes_s = sorted(tc_holes, key=attrgetter('z'), reverse=True)
+        tc_holes_s = sorted(tc_holes, key=attrgetter('z'), reverse=True)
 
+        _logger.debug(f'{tc_holes=}')
+
+        if tc_holes_s:
             tc_hole_z = tc_holes_s[0].z
 
-            _logger.debug(f"Found start of board at {tc_holes_s[0]}.")
+            _logger.info(f"Found start of board at {tc_holes_s[0]}.")
 
             # Naively assume that the first point is the start of the
             # board
             z = tc_hole_z + HN_H1_TO_BOARD_Z
-        except Exception:
-            _logger.warning("Couldn't find central hole, trying other holes",
-                            exc_info=True)
+        else:
+
+            _logger.warning("Couldn't find central hole, trying other holes")
             try:
                 # Ignore the central hole and look instead for the side holes.
                 tp_search_start = point(x=HN_H2_X + x_offset, y=search_y)
@@ -768,8 +778,8 @@ class CouchTop(object):
                                     f"{bn_hole_z}, {bp_hole_z}")
                     raise Warning("Holes not aligned in Z.")
                 else:
-                    _logger.debug("Holes are aligned in the Z direction to "
-                                  f"within {HN_H_DIAM/2} distance.")
+                    _logger.info("Holes are aligned in the Z direction to "
+                                 f"within {HN_H_DIAM/2} cm.")
 
                 if abs(abs(top_hole_z - bot_hole_z) - HN_H_SEP) > HN_H_DIAM:
                     # Holes aren't spaced right, no further checking yet
@@ -779,7 +789,7 @@ class CouchTop(object):
                                     f" {top_hole_z}, {bot_hole_z}")
                     raise Warning("Holes not spaced correctly.")
                 else:
-                    _logger.debug("Holes appear to be spaced correctly.")
+                    _logger.info("Holes appear to be spaced correctly.")
 
                 # Finally, these look right so return the location of the top
                 # of the board from these holes.  Include the distance from
@@ -790,9 +800,15 @@ class CouchTop(object):
 
                 z = (((top_hole_z + bot_hole_z + HN_H_SEP) / 2)
                      + HN_H1_TO_H2_Z + HN_H1_TO_BOARD_Z)
+
+                # Recalculate the x_offset as we could not find the original
+                #  hole, so the guessed x offset is probably wrong.
+                x_offset = guess_board_x_center(series, couch_y,
+                                                init_guess_z=top_hole_z,
+                                                z_avg=2.0)
+
             except IndexError:
                 raise Warning("Failed to find correct holes.")
-                pass
 
         offset = point(x_offset, 0, z)
         _logger.debug(f"{offset=}")
