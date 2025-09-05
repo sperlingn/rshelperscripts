@@ -1077,7 +1077,7 @@ def set_beamnames_to_number(beamset):
             beam.Name = str(beam.Number)
 
 
-def rename_beams(beamset, icase, dialog=True, do_rename=True):
+def beamname_map(beamset, icase):
     # Example beam name format:
     # "1 RAO"
     # "5 T0 G121-330"
@@ -1106,30 +1106,40 @@ def rename_beams(beamset, icase, dialog=True, do_rename=True):
                                                 site, add_quality)}
                     for beam in beamset.Beams}
 
+    return name_map
+
+
+def rename_beams(beamset, icase, dialog=True, do_rename=True):
+    # Example beam name format:
+    # "1 RAO"
+    # "5 T0 G121-330"
+    # "16 T270 G181-359"
+
     if do_rename:
         try:
             with CompositeAction('Rename all beams in beamset '
                                  f'"{beamset.DicomPlanLabel}"'):
 
-                orig_names = {beam.Number: beam.Name for beam in beamset.Beams}
-                number_map = renumber_beams(beamset, dialog)
+                renumber_beams(beamset, dialog)
+
+                name_map = beamname_map(beamset, icase)
+
                 set_beamnames_to_number(beamset)
 
                 for beam in beamset.Beams:
-                    beam.Name = name_map[number_map[beam.Number]]['Name']
+                    beam.Name = name_map[beam.Number]['NewName']
 
-                if any([orig_names[number_map[beam.Number]] !=
-                        name_map[number_map[beam.Number]]]):
+                if all([beam['Name'] == beam['NewName']
+                        for beam in name_map.values()]):
                     # No changes made, bubble out to keep from changing plan
                     raise Warning("Beams alredy correct, No changes made.")
-                else:
-                    return False
         except Warning as w:
             if dialog:
                 Show_OK(w, "Beam Rename")
-                return True
 
     else:
-        return {beam['Name']: beam['NewName']
-                for beam in name_map.values()
-                if beam['Name'] != beam['NewName']}
+        name_map = beamname_map(beamset, icase)
+
+    return {beam['Name']: beam['NewName']
+            for beam in name_map.values()
+            if beam['Name'] != beam['NewName']}

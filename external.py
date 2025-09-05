@@ -1565,8 +1565,8 @@ class SegmentReorderDialog(GenericReorderDialog):
 
 
 def renumber_beams(beamset, dialog=False):
-    name_map = {beam.Name: beam.Number for beam in beamset.Beams}
-    beam_nos = list(name_map.values())
+    beam_map = {beam.Number: beam for beam in beamset.Beams}
+    beam_nos = list(beam_map)
     non_sequential = any(map(lambda x, y: y != x+1,
                              beam_nos[:-1], beam_nos[1:]))
 
@@ -1584,7 +1584,8 @@ def renumber_beams(beamset, dialog=False):
         for i, beam in enumerate(beamset.Beams):
             beam.Number = beam_nos[0] + i
 
-    return {name_map[name]: beamset.Beams[name].Number for name in name_map}
+    _logger.debug(f"{beam_map=}")
+    return {beam.Number: number for number, beam in beam_map.items()}
 
 
 def obj_name(obj, name_identifier_object='.', strict=False):
