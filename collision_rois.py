@@ -369,7 +369,7 @@ def check_collision(plan, beam_set, silent=False, retain=False,
                     retain_on_fail=True, full_arc_check=False):
     # TODO: Add full arc check logic
     try:
-        with CompositeAction("Add Collision ROIs"):
+        with CompositeAction("Add Collision ROIs") as CA:
 
             overlaps = Overlaps(beam_set=beam_set,
                                 full_arc_check=full_arc_check)
@@ -404,12 +404,20 @@ def check_collision(plan, beam_set, silent=False, retain=False,
                        "         the ROI details on Gantry ROIs.")
 
                 res = Show_OKCancel(msg, 'Review for collisions')
-                if res == 1:
-                    _logger.info("Retaining ROIs.")
+                retain = res == 1
+
+            if not retain:
+                if CA.is_root:
+                    # We can undo by popping out of the CompositeAction with a
+                    # warning that we catch.
+                    raise Warning("Removing ROIs.")
                 else:
-                    raise Warning("Removing ROIs")
-            elif not retain:
-                raise Warning("Removing ROIs")
+                    # Composite action was not root, so we have to delete
+                    # contours manually.
+                    _logger.info("Removing ROIs using Cleanup.")
+                    overlaps.CleanUp()
+            else:
+                _logger.info("Retaining ROIs.")
 
     except Warning as e:
         _logger.info(f"Stopped with warning. {e!s}", exc_info=True)

@@ -611,11 +611,21 @@ def check_collision_dialog(plan, beam_set, full_arc_check=False):
                                          full_arc_check=full_arc_check)
 
     try:
-        with CompositeAction("Collision Check"):
+        with CompositeAction("Collision Check") as CA:
             res = dlg.ShowDialog()
 
-            if not res:
-                raise Warning("Closed with cancel")
+            if res:
+                if CA.is_root:
+                    # We can undo by popping out of the CompositeAction with a
+                    # warning that we catch.
+                    raise Warning("Closed with cancel")
+                else:
+                    # Composite action was not root, so we have to delete
+                    # contours manually.
+                    _logger.info("Closed with cancel, Removing ROIs.")
+                    results['Overlaps'].CleanUp()
+            else:
+                _logger.info("Retaining ROIs.")
     except Warning as e:
         _logger.warning("{}".format(e), exc_info=True)
 

@@ -281,9 +281,17 @@ finally:
         def get_active_singleton(cls):
             return cls._clsinstance
 
+        @property
+        def is_root(self):
+            return self == type(self)._clsinstance
+
+        @property
+        def is_fake(self):
+            return not self.is_root
+
         def __enter__(self):
             self.instance.__enter__()
-            return None
+            return self
 
         def __exit__(self, e_type, e, e_traceback):
             cls = type(self)
