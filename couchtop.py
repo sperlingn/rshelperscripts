@@ -9,7 +9,7 @@ from .case_comment_data import (get_case_comment_data, set_case_comment_data,
                                 get_data)
 from .dosetools import invalidate_structureset_doses
 
-from .external import (get_current, CompositeAction, Show_YesNo,
+from .external import (get_current, CompositeAction, Show_YesNo, MB_Result,
                        ArgumentOutOfRangeException,
                        pick_list, pick_plan, pick_exam)
 
@@ -72,7 +72,7 @@ KNOWN_TOPS = {
          'tx_machines': 'Edge'},
     'Edge Head & Neck Model':
         {'surface_roi': 'Outer Shell - Edge H&N',
-         'default_offset': {'x': -.1, 'y': -2.33, 'z': 0.4},
+         'default_offset': {'x': -.1, 'y': -2.57, 'z': 0.4},
          'tx_machines': 'Edge'},
     'TrueBeam Head & Neck Model':
         {'surface_roi': 'Surface Shell - TrueBeam',
@@ -135,7 +135,7 @@ struct DCM_TAG_01F7_1027
 
 # DICOM Search
 PRIV_01F7_1027 = (0x01F7, 0x1027)
-HEURISTIC_OFFSET = 1497
+HEURISTIC_OFFSET = 1525
 
 # Couch coordinate point name
 COUCH_COORD_Z_POINT = 'CouchZMax'
@@ -367,6 +367,9 @@ class CouchTop(object):
 
     inActiveSet = False
 
+    message = None
+    perform_trim = True
+
     def __init__(self, Name,
                  default_offset=None, surface_roi=None, tx_machines=None,
                  patient_db=get_current("PatientDB"), structure_set=None):
@@ -596,6 +599,11 @@ class CouchTop(object):
         with CompositeAction("Add couch '{}' to plan.".format(self.Name)):
             create_opts = self.create_opts
             create_opts['TargetExamination'] = examination
+
+            if self.isValid:
+                _logger.warning("Couchtop already built, removing geometry.")
+                self.remove_from_case(geometry_only=True)
+
             icase.PatientModel.CreateStructuresFromTemplate(**create_opts)
             self._bounding_box = None
 
@@ -622,6 +630,15 @@ class CouchTop(object):
         if not structure_set.OutlineRoiGeometry:
             _logger.warning("No patient outline, not trimming couch model.")
             return False
+
+        if not self.perform_trim:
+            if Show_YesNo(caption="Perform Trim?",
+                          defaultResult=MB_Result.No,
+                          message=(f"Trim prevented ({self.message})\n"
+                                   "Perform trim anyway?")) != MB_Result.Yes:
+                return False
+            else:
+                self.peform_trim = True
 
         patient_bb = BoundingBox(structure_set.OutlineRoiGeometry)
         box_bb = self.boundingbox + patient_bb
@@ -833,8 +850,8 @@ class CouchTop(object):
             # bottom of the CT.
             _logger.warning("Couldn't find H&N board position."
                             "  Board should be positioned manually.")
-            return point(0, 0, ct_z if ct_z is not None else 0)
-            pass
+            self.perform_trim = False
+            self.message = "Board should be positioned manually"
 
         offset = point(0, 0, 0)
         try:
@@ -842,7 +859,7 @@ class CouchTop(object):
         except (TypeError, ValueError):
             _logger.warning("Couldn't center H&N board position.")
 
-        if ct_z:
+        if ct_z is not None:
             offset.z = ct_z
 
         return offset
