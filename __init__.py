@@ -8,6 +8,14 @@ from .case_comment_data import *  # noqa: W401, W611
 from .couchtop import *           # noqa: W401, W611
 from .points import *             # noqa: W401, W611
 from .rsdicomread import *        # noqa: W401, W611
+from .dosetools import *          # noqa: W401, W611
+from .external import *           # noqa: W611
+from .roi import *                # noqa: W401, W611
+from .clinicalgoals import *      # noqa: W401, W611
+from .validations import *        # noqa: W401, W611
+from .plans import *              # noqa: W401, W611
+from .optimization import (RunOptimizations, BulkOptimizer)    # noqa: W611
+from .dose_eval_dialog import show_indices_dialog # noqa: W611
 
 del logging                       # noqa: E602
 
