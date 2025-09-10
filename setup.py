@@ -29,7 +29,7 @@ if path.exists(path.join(cwd, '.git')):
         gv = re.match(match_re, git_out)
         git_version = f'{gv["ver"]}'
         if gv['cdiff'] != "0":
-            git_version += f'-dev{gv["cdiff"]}+{gv["commit"]}'
+            git_version += f'.dev{gv["cdiff"]}+{gv["commit"]}'
 
     except (subprocess.CalledProcessError, FileNotFoundError) as e:
         print(f"Could not find git.\n{e}")
