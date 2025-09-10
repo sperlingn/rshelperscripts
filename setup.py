@@ -1,4 +1,14 @@
 #!/usr/bin/env python3
+
+# Process in the RayStation venv:
+
+# pip install --upgrade "<PATH_TO_rshelperscripts_folder>"
+
+# If you are planning on developing and using git to modify, then ensure the
+# raystation system has git installed, and then you can use:
+
+# pip install --upgrade "git://github.comsperlingn/rshelperscripts.git"
+
 import setuptools
 
 from os import path
@@ -9,7 +19,7 @@ match_re = r'v(?P<ver>[\d.]+)-(?P<cdiff>\d+)-(?P<commit>[\w]+)'
 
 cwd = path.abspath(path.dirname(__file__))
 
-version = '1.0.0.dev2'
+version = '1.0.1'
 git_version = None
 if path.exists(path.join(cwd, '.git')):
     git_cmd = 'git describe --long --tags'
@@ -39,9 +49,11 @@ if path.exists(path.join(cwd, '.git')):
               f"Git responded with: {git_out!r}")
         git_version = None
 
+version = git_version or version
+
 setuptools.setup(
     name='rshelperscripts',
-    version=git_version or version,
+    version=version,
     packages=['rshelperscripts'],
     package_dir={
         'rshelperscripts': '.',
