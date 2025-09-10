@@ -1,0 +1,2 @@
+pyodbc==5.0.1
+pydicom==2.3.1
