@@ -450,7 +450,7 @@ class CT_Image_Stack(IndirectInheritanceClass):
     _npixels = None
     _res = None
     _img_stack = None
-    DICOM = None
+    _DICOM = None
 
     def __init__(self, img_stack):
         if abs(point(img_stack.SliceDirection)) != point.Z():
@@ -471,7 +471,11 @@ class CT_Image_Stack(IndirectInheritanceClass):
 
         self._bounding_box = BoundingBox(img_stack)
 
-        self.DICOM, = read_dataset(self)
+    @property
+    def DICOM(self):
+        if not self._DICOM:
+            self._DICOM, = read_dataset(self)
+        return self._DICOM
 
     @property
     def size(self):

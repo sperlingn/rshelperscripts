@@ -408,6 +408,12 @@ class CouchTop(object):
         return self.isValid and self.ROI_Names == self.roi_geometries.keys()
 
     @property
+    def isPartiallyBuilt(self):
+        return self.isPresent and any([geometry.PrimaryShape is not None
+                                       for geometry
+                                       in self.roi_geometries.values()])
+
+    @property
     def isBuilt(self):
         return self.isPresent and all([geometry.PrimaryShape is not None
                                        for geometry
@@ -600,7 +606,7 @@ class CouchTop(object):
             create_opts = self.create_opts
             create_opts['TargetExamination'] = examination
 
-            if self.isValid:
+            if self.isPartiallyBuilt:
                 _logger.warning("Couchtop already built, removing geometry.")
                 self.remove_from_case(geometry_only=True)
 
@@ -877,9 +883,11 @@ class CouchTop(object):
             offset = point.Z() * (couch_bb.upper.z +
                                   (series.minz - couch_bb.lower.z))
 
+            offset.z = 0
+
             if self.isHN:
                 offset = self.get_hn_offset(series, couch_y, ct_z)
-            elif ct_z:
+            elif ct_z is not None:
                 offset.z = ct_z
             else:
                 # Not H&N, not simple search, figure out from body site?
