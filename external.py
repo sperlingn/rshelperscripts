@@ -187,6 +187,30 @@ def _await_user_input_mb(message):
     return Show_OK(f'{message}', "Awaiting Input", ontop=True)
 
 
+class VERSION(str):
+    def __safe_number__(self, position):
+        try:
+            return int(self.split('.')[position])
+        except (IndexError, ValueError):
+            return 0
+
+    @property
+    def major(self):
+        return self.__safe_number__(0)
+
+    @property
+    def minor(self):
+        return self.__safe_number__(1)
+
+    @property
+    def build(self):
+        return self.__safe_number__(2)
+
+    @property
+    def revision(self):
+        return self.__safe_number__(3)
+
+
 try:
     from connect import RayWindow
 except ImportError:
@@ -207,12 +231,12 @@ try:
                          await_user_input as _await_user_input, set_progress)
 
     IN_RAYSTATION = True
-    RS_VERSION = get_current("ui").GetApplicationVersion()
+    RS_VERSION = VERSION(get_current("ui").GetApplicationVersion())
 
 except ImportError:
     # Replacement functions when not running in RS
     IN_RAYSTATION = False
-    RS_VERSION = "0.0"
+    RS_VERSION = VERSION("0.0.0.0")
 
     from .mock_objects import MockPatient
 
