@@ -367,8 +367,7 @@ class CouchTop(object):
 
     inActiveSet = False
 
-    message = None
-    perform_trim = True
+    refuse_trim = False
 
     def __init__(self, Name,
                  default_offset=None, surface_roi=None, tx_machines=None,
@@ -649,14 +648,14 @@ class CouchTop(object):
             _logger.warning("No patient outline, not trimming couch model.")
             return False
 
-        if not self.perform_trim:
+        if self.refuse_trim:
             if Show_YesNo(caption="Perform Trim?",
                           defaultResult=MB_Result.No,
-                          message=(f"Trim prevented ({self.message})\n"
+                          message=(f"Trim prevented: \n{self.refuse_trim}\n\n"
                                    "Perform trim anyway?")) != MB_Result.Yes:
                 return False
             else:
-                self.peform_trim = True
+                self.refuse_trim = False
 
         patient_bb = BoundingBox(structure_set.OutlineRoiGeometry)
         box_bb = self.boundingbox + patient_bb
@@ -868,8 +867,8 @@ class CouchTop(object):
             # bottom of the CT.
             _logger.warning("Couldn't find H&N board position."
                             "  Board should be positioned manually.")
-            self.perform_trim = False
-            self.message = "Board should be positioned manually"
+            self.refuse_trim = ("H&N location not found, "
+                                "board should be positioned manually")
 
         offset = point(0, 0, 0)
         try:
@@ -933,7 +932,11 @@ class CouchTop(object):
                 offset.z += SITE_SHIFT[icase.BodySite]
             else:
                 # Couldn't figure out where the couch was, don't trim.
-                self.perform_trim = False
+                self.refuse_trim = (
+                    "Couch Z position not found through inspection nor was "
+                    f"site ({icase.BodySite}) found in the known sites:\n"
+                    f"{list(SITE_SHIFT.keys())}.\n"
+                    "Board should be positioned manually before trimming")
 
         else:
             try:

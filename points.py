@@ -473,11 +473,8 @@ class CT_Image_Stack(IndirectInheritanceClass):
 
     @property
     def DICOM(self):
-        import traceback
-        _logger.debug(''.join(("Asked for DICOM\n",
-                               *traceback.format_stack()[::-1])))
-
         if not self._DICOM:
+            # Defer reading unless we need to (a bit slow)
             self._DICOM, = read_dataset(self)
         return self._DICOM
 
