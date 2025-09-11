@@ -519,6 +519,14 @@ class CouchTop(object):
         top_offset = self.Top_offset
         bb_offset = point()
 
+        _logger.debug('\n\t'.join((
+            'Transform calculation:',
+            f'{pt_pos=}',
+            f'{bb_offset=}',
+            f'{self.boundingbox=}',
+            f'{top_offset=}',
+        )))
+
         if pt_pos[2] == 'S':
             bb_offset.y -= self.boundingbox.lower.y
         elif pt_pos[2] == 'P':
@@ -535,9 +543,13 @@ class CouchTop(object):
 
         pt = offset + top_offset + bb_offset
 
-        _logger.debug("Transform calculation.\n\t"
-                      f'{bb_offset=}\n\t{top_offset=}\n\t{pt_pos=}\t\n'
-                      f'{pt = }')
+        _logger.debug('\n\t'.join((
+            "Transform calculation after change.",
+            f'{bb_offset=}',
+            f'{top_offset=}',
+            f'{pt_pos=}',
+            f'{pt=}',
+        )))
 
         transform = AffineMatrix(pt)
 
@@ -870,38 +882,58 @@ class CouchTop(object):
 
         return offset
 
-    def get_offset(self, structure_set, couch_y, icase, force_z=None):
+    def get_offset(self, structure_set, couch_y, icase, force_z=None,
+                   default_centered=True):
+        if icase is None:
+            icase = get_current("Case")
+
+        pt_pos = structure_set.OnExamination.PatientPosition
+
         if force_z is None:
             examination = structure_set.OnExamination
-            series = Image_Series(examination.Series[0], structure_set)
+            series = Image_Series(examination, structure_set)
 
             couch_bb = self.boundingbox
 
             ct_z = guess_couchtop_z(series)
 
-            # Default to move the bottom of the board to the bottom of the CT
-            # TODO: Not handling Feet First correctly.
-            offset = point.Z() * (couch_bb.upper.z +
-                                  (series.minz - couch_bb.lower.z))
+            if default_centered:
+                center_z_offset = (couch_bb.size - series.size).z / 2
+            else:
+                center_z_offset = 0
 
-            _logger.debug(f"{couch_bb=}\n{series.img_stack.GetBoundingBox()=}")
-            offset.z = 0
+            # Default to move the board bottom to the CT bottom
+            # Feet first vs head first...
+            if pt_pos[0] == 'H':
+                offset = point.Z() * (couch_bb.upper.z - couch_bb.lower.z
+                                      + series.minz - center_z_offset)
+            elif pt_pos[0] == 'F':
+                offset = point.Z() * (couch_bb.lower.z - couch_bb.upper.z
+                                      + series.maxz + center_z_offset)
+            else:
+                offset = point(0, 0, 0)
+
+            _logger.debug('\n\t'.join((
+                'Initial placement info:',
+                f'{couch_bb=}',
+                f'{series.img_stack.GetBoundingBox()=}',
+                f'{offset=}',
+                f'{couch_bb.size=}',
+            )))
 
             if self.isHN:
                 offset = self.get_hn_offset(series, couch_y, ct_z)
             elif ct_z is not None:
                 offset.z = ct_z
-            else:
+            elif icase.BodySite in SITE_SHIFT:
                 # Not H&N, not simple search, figure out from body site?
-                if icase is None:
-                    icase = get_current("Case")
-
-                if icase.BodySite in SITE_SHIFT:
-                    _logger.debug("Can't determine origin from CT, shifting "
-                                  "based on treatment site: "
-                                  f"{icase.BodySite} = "
-                                  f"{SITE_SHIFT[icase.BodySite]}")
-                    offset.z += SITE_SHIFT[icase.BodySite]
+                _logger.debug("Can't determine origin from CT, shifting based"
+                              " on treatment site: "
+                              f"{SITE_SHIFT[icase.BodySite]=}")
+                offset.z += SITE_SHIFT[icase.BodySite]
+            else:
+                # Couldn't figure out where the couch was, don't trim.
+                self.perform_trim = False
 
         else:
             try:
@@ -1137,7 +1169,7 @@ def addcouchtoexam(icase, examination=None, plan=None,
         examination = pick_exam()
 
     structure_set = icase.PatientModel.StructureSets[examination.Name]
-    series = Image_Series(examination.Series[0])
+    series = Image_Series(examination)
 
     tops = CouchTopCollection(use_known=True)
 
