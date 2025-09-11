@@ -473,6 +473,10 @@ class CT_Image_Stack(IndirectInheritanceClass):
 
     @property
     def DICOM(self):
+        import traceback
+        _logger.debug(''.join(("Asked for DICOM\n",
+                               *traceback.format_stack()[::-1])))
+
         if not self._DICOM:
             self._DICOM, = read_dataset(self)
         return self._DICOM
@@ -696,17 +700,22 @@ class Image_Series():
     _series = None
     img_stack = None
     UID = ''
-    DICOM = None
     structure_sets = None
+    Modality = None
+    _exam = None
 
-    def __init__(self, series, structure_sets=None):
-        self._series = series
+    def __init__(self, exam_or_series, structure_sets=None, series_number=0):
+        if hasattr(exam_or_series, 'Series'):
+            self._series = exam_or_series.Series[series_number]
+            self._exam = exam_or_series
+            self.Modality = exam_or_series.EquipmentInfo.Modality
+        else:
+            self._series = exam_or_series
+            self.Modality = self.DICOM.Modality
 
-        self.UID = series.ImportedDicomUID
+        self.UID = self._series.ImportedDicomUID
 
-        self.img_stack = CT_Image_Stack(series.ImageStack)
-
-        self.DICOM = self.img_stack.DICOM
+        self.img_stack = CT_Image_Stack(self._series.ImageStack)
 
         if structure_sets is not None:
             try:
@@ -716,9 +725,9 @@ class Image_Series():
         else:
             self.structure_sets = []
 
-        if self.DICOM.Modality not in VALID_MODALITIES:
+        if self.Modality not in VALID_MODALITIES:
             raise NotImplementedError("Unknown/unhandled modality "
-                                      f"{self.DICOM.Modality} in "
+                                      f"{self.Modality} in "
                                       f"series {self._series} ({self.UID=})")
 
     def __getattr__(self, attr):
@@ -728,6 +737,10 @@ class Image_Series():
             return getattr(self.img_stack, attr)
 
         raise AttributeError
+
+    @property
+    def DICOM(self):
+        return self.img_stack.DICOM
 
 
 class _M():
