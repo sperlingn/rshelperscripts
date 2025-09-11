@@ -513,6 +513,10 @@ class CT_Image_Stack(IndirectInheritanceClass):
         return self._bounding_box.center
 
     @property
+    def center(self):
+        return self.image_center
+
+    @property
     def corner(self):
         return self._bounding_box.lower
 
@@ -736,7 +740,7 @@ class Image_Series():
         elif hasattr(self.img_stack, attr):
             return getattr(self.img_stack, attr)
 
-        raise AttributeError
+        raise AttributeError(f'{type(self).__name__} has no member "{attr}"')
 
     @property
     def DICOM(self):
