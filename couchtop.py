@@ -35,7 +35,8 @@ NON_HN_SITES = {"Left Breast",
                 "Left Upper Extremity",
                 "Right Upper Extremity",
                 "Left Lower Extremity",
-                "Right Lower Extremity"}
+                "Right Lower Extremity",
+                "Extremity"}
 
 SITE_SHIFT = {"Left Breast": -45.,
               "Right Breast": -45.,
@@ -355,7 +356,6 @@ class CouchTop(object):
     _tx_machines_set = None
     _board_offset = None
 
-    roi_geometries = None
     template = None
     _desc_re = re_compile(r'(?:Offset:\s(?P<Offset>\d+)'
                           r'|Tx Machines:\s(?P<TxMachines>.*)$'
@@ -503,12 +503,12 @@ class CouchTop(object):
             self._bounding_box = BoundingBox(self.roi_geometries.values())
             _logger.debug(f"Rebuilding...\n\t{self._bounding_box}")
             try:
-                _logger.debug('\n\t'.join('{}: {}'.format(g.OfRoi.Name,
-                                                          g.GetBoundingBox())
-                                          for g in
-                                          self.roi_geometries.values()))
+                _logger.debug('\n\t'.join(('BBs:', *(
+                    f'{g.OfRoi.Name}: {g.GetBoundingBox()}'
+                    for g in self.roi_geometries.values()))))
             except Exception:
-                pass
+                _logger.exception("Couldn't log...")
+
         return self._bounding_box.copy()
 
     def get_transform(self, structure_set, offset):
@@ -594,7 +594,7 @@ class CouchTop(object):
         if icase is None:
             icase = get_current("Case")
         if examination is None:
-            examination = icase.PatientModel.Examinations[0]
+            examination = get_current("Examination")
 
         structure_set = icase.PatientModel.StructureSets[examination.Name]
         case_data = get_case_comment_data(icase)
@@ -659,7 +659,7 @@ class CouchTop(object):
             for roi in self._rois.values():
                 roi.ab_intersect(rois_a=roi, rois_b=box)
 
-            if _logger.level != logging.DEBUG:
+            if _logger.level >= logging.DEBUG:
                 box.DeleteRoi()
 
             surface = self._rois[self.surface_roi]
@@ -672,8 +672,8 @@ class CouchTop(object):
 
     def update(self, structure_set):
         struct_rois = structure_set.RoiGeometries.Keys
-        self._rois = {roi.OfRoi.Name: ROI(roi, structure_set) for roi in
-                      structure_set.RoiGeometries
+        self._rois = {roi.OfRoi.Name: ROI(roi, structure_set)
+                      for roi in structure_set.RoiGeometries
                       if roi.OfRoi.Name in self.ROI_Names}
         self.roi_geometries = {roi_name: structure_set.RoiGeometries[roi_name]
                                for roi_name in self.ROI_Names
@@ -880,9 +880,11 @@ class CouchTop(object):
             ct_z = guess_couchtop_z(series)
 
             # Default to move the bottom of the board to the bottom of the CT
+            # TODO: Not handling Feet First correctly.
             offset = point.Z() * (couch_bb.upper.z +
                                   (series.minz - couch_bb.lower.z))
 
+            _logger.debug(f"{couch_bb=}\n{series.img_stack.GetBoundingBox()=}")
             offset.z = 0
 
             if self.isHN:
@@ -928,15 +930,13 @@ class CouchTop(object):
 
         self._apply_transform(structure_set, transform)
 
-    def remove_from_case(self, geometry_only=True):
-        if self.roi_geometries:
-            with CompositeAction("Remove {self.Name} couch from case."):
-                for geom in self.roi_geometries.values():
-                    if geom.PrimaryShape:
-                        if geometry_only:
-                            geom.DeleteGeometry()
-                        else:
-                            geom.OfRoi.DeleteRoi()
+    def remove_from_case(self, geometry_only=True, examination=None):
+        with CompositeAction("Remove {self.Name} couch from case."):
+            for roi in self._rois.values():
+                if geometry_only:
+                    roi.DeleteGeometry(Examination=examination)
+                else:
+                    roi.DeleteRoi()
 
     def machine_matches(self, inmachinename):
         inmachines = self.machine_set(inmachinename)
@@ -972,7 +972,6 @@ class CouchTop(object):
                 f'surface_roi: {self.surface_roi}\n'
                 f'_tx_machines_set: {self._tx_machines_set}\n'
                 f'_board_offset: {self._board_offset}\n'
-                f'roi_geometries: {self.roi_geometries}\n'
                 f'template: {self.template}\n'
                 f'_bounding_box: {self._bounding_box}\n'
                 f'inActiveSet: {self.inActiveSet}\n'
