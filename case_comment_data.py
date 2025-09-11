@@ -162,7 +162,7 @@ def get_case_comment_data(icase, first=False):
     Pulls first pickled data in the case comment field.
     """
     data = get_data(icase.Comments, first)
-    _logger.debug("{data=}")
+    _logger.debug(f"{data=}")
     return data
 
 
