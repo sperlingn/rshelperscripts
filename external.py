@@ -272,8 +272,6 @@ finally:
         def __init__(self, *args, **kwargs):
             self.my_args = (args, kwargs)
             self.instance
-            if RS_VERSION.major == 14:
-                _logger.warning("RS 14 is broken, don't use composite action")
 
         @property
         def instance(self):
@@ -322,7 +320,10 @@ finally:
         def __exit__(self, e_type, e, e_traceback):
             cls = type(self)
             if e_type is not None:
-                _logger.exception(str(e))
+                if isinstance(e_type, Warning):
+                    _logger.warning(f'{e!s}')
+                else:
+                    _logger.exception(f'{e!s}')
 
             if self == cls._clsinstance and not cls._blocked:
                 # We were the first launch of CompositeAction, we can now clear
