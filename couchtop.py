@@ -670,7 +670,7 @@ class CouchTop(object):
             for roi in self._rois.values():
                 roi.ab_intersect(rois_a=roi, rois_b=box)
 
-            if _logger.level >= logging.DEBUG:
+            if _logger.level <= logging.DEBUG:
                 box.DeleteRoi()
 
             surface = self._rois[self.surface_roi]
