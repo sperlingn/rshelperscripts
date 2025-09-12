@@ -4,7 +4,7 @@ from .external import (CompositeAction as CompositeAction, ObjectDict,
                        params_from_mapping, get_machine, obj_name, clamp,
                        rs_getattr, rs_hasattr, sequential_dedup_return_list,
                        dup_object_param_values, CallLaterList, get_unique_name,
-                       Show_OK, renumber_beams)
+                       Show_OK, renumber_beams, RS_VERSION)
 from .examinations import duplicate_exam as _duplicate_exam
 from .roi import ROI_Builder
 from .i18n import BEAMNAME_QUADRANT_TO_NAME, BEAMNAME_BREAST_SC_PA
@@ -516,13 +516,14 @@ def copy_rx(beamset_in, beamset_out):
 
 
 def beam_opt_settings_from_plan(plan, beamset, beam):
-    bsid = beamset.UniqueId
+    bsid = beamset.BeamSetIdentifier()
     for opt in plan.PlanOptimizations:
         # Skip if this is not an opt for this plan.
-        if bsid not in (obs.UniqueId for obs in opt.OptimizedBeamSets):
+        if bsid not in (obs.BeamSetIdentifier()
+                        for obs in opt.OptimizedBeamSets):
             continue
         for tx_setup in opt.OptimizationParameters.TreatmentSetupSettings:
-            if tx_setup.ForTreatmentSetup.UniqueId != bsid:
+            if tx_setup.ForTreatmentSetup.BeamSetIdentifier() != bsid:
                 # Not for this beamset, skip.
                 continue
             for beamsetting in tx_setup.BeamSettings:
@@ -536,10 +537,12 @@ def beam_opt_settings_from_plan(plan, beamset, beam):
 
 def get_opts_for_bs(plan, beamset):
     # Returns a list of PlanOptmizations that optimize this beamset.
-    bsid = beamset.UniqueId
+    bsid = beamset.BeamSetIdentifier()
     return [opt for opt in plan.PlanOptimizations
-            if (bsid in (obs.UniqueId for obs in opt.OptimizedBeamSets) and
-                bsid in (tx_setup.ForTreatmentSetup.UniqueId for tx_setup in
+            if (bsid in (obs.BeamSetIdentifier()
+                         for obs in opt.OptimizedBeamSets) and
+                bsid in (tx_setup.ForTreatmentSetup.BeamSetIdentifier()
+                         for tx_setup in
                          opt.OptimizationParameters.TreatmentSetupSettings))]
 
 
@@ -1143,3 +1146,12 @@ def rename_beams(beamset, icase, dialog=True, do_rename=True):
     return {beam['Name']: beam['NewName']
             for beam in name_map.values()
             if beam['Name'] != beam['NewName']}
+
+
+def bs_equals(self, other):
+    if RS_VERSION.major >= 14:
+        # Need to move from UniqueId to BeamSetIdentifier() for
+        # comparison, this should always be valid.
+        return self.BeamSetIdentifier() == other.BeamSetIdentifier()
+    else:
+        return self.UniqueId == other.UniqueId
