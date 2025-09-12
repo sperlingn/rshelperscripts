@@ -69,6 +69,7 @@ class ValidationResult:
     def __str__(self):
         return (f'Plan: {_name(self.plan)}, Beamset: {_name(self.beamset)}'
                 f'{" (Corrected)" if self.fixed else ""}\n'
+                f'In {self.key} validation:\n'
                 f'{self.message}')
 
     def __repr__(self):
@@ -336,13 +337,14 @@ class CouchValidation(ValidationResult):
                 built_tops = unique_built_tops
 
             if not expected_top.isBuilt:
-                violation = 'MISSING_TOP'
-                message = (f'FAILURE: Expected top {expected_top!s} missing.\n'
+                violation = 'Couchtop Missing'
+                message = ('FAILURE: Expected top was not present.\n'
+                           f'Expected: {expected_top.Name}\n'
                            f'Status:\n'
                            f'\tRois present: {expected_top.isPresent}\n'
                            f'\tRois built: {expected_top.isBuilt}')
             elif len(built_tops) != 1:
-                violation = 'TOO_MANY_TOPS'
+                violation = 'Too many tops'
                 message = f'Too many tops in plan.  Found {len(built_tops)}:\n'
                 message += '\n'.join([f'{top.Name}' for top in built_tops])
 
@@ -351,7 +353,7 @@ class CouchValidation(ValidationResult):
                 message = f'SUCCESS: Found Top {built_tops[0]}'
 
         except Exception as e:
-            violation = 'EXCEPTION'
+            violation = 'An Exception ocurred'
             message = f'FAILURE: Had exception in couch identification:\n{e}'
 
         self.violation = violation
@@ -367,7 +369,7 @@ class BeamNameValidation(ValidationResult):
                                          dialog=not self.silent,
                                          do_rename=False)
             if invalid_names:
-                violation = 'BEAM_NAMES'
+                violation = 'Beam Names do not agree'
                 message = ('FAILURE: The following beam names do not follow'
                            ' convention.\n'
                            '\n'
@@ -379,7 +381,7 @@ class BeamNameValidation(ValidationResult):
                 message = ('SUCCESS: All beams named in accordance with'
                            ' standard naming conentions.')
         except Exception as e:
-            violation = 'EXCEPTION'
+            violation = 'An Exception ocurred'
             message = f'FAILURE: Had exception in beam name validation:\n{e}'
 
         self.violation = violation
