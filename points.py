@@ -450,7 +450,7 @@ class CT_Image_Stack(IndirectInheritanceClass):
     _npixels = None
     _res = None
     _img_stack = None
-    DICOM = None
+    _DICOM = None
 
     def __init__(self, img_stack):
         if abs(point(img_stack.SliceDirection)) != point.Z():
@@ -471,7 +471,12 @@ class CT_Image_Stack(IndirectInheritanceClass):
 
         self._bounding_box = BoundingBox(img_stack)
 
-        self.DICOM, = read_dataset(self)
+    @property
+    def DICOM(self):
+        if not self._DICOM:
+            # Defer reading unless we need to (a bit slow)
+            self._DICOM, = read_dataset(self)
+        return self._DICOM
 
     @property
     def size(self):
@@ -503,6 +508,10 @@ class CT_Image_Stack(IndirectInheritanceClass):
     @property
     def image_center(self):
         return self._bounding_box.center
+
+    @property
+    def center(self):
+        return self.image_center
 
     @property
     def corner(self):
@@ -692,17 +701,22 @@ class Image_Series():
     _series = None
     img_stack = None
     UID = ''
-    DICOM = None
     structure_sets = None
+    Modality = None
+    _exam = None
 
-    def __init__(self, series, structure_sets=None):
-        self._series = series
+    def __init__(self, exam_or_series, structure_sets=None, series_number=0):
+        if hasattr(exam_or_series, 'Series'):
+            self._series = exam_or_series.Series[series_number]
+            self._exam = exam_or_series
+            self.Modality = exam_or_series.EquipmentInfo.Modality
+        else:
+            self._series = exam_or_series
+            self.Modality = self.DICOM.Modality
 
-        self.UID = series.ImportedDicomUID
+        self.UID = self._series.ImportedDicomUID
 
-        self.img_stack = CT_Image_Stack(series.ImageStack)
-
-        self.DICOM = self.img_stack.DICOM
+        self.img_stack = CT_Image_Stack(self._series.ImageStack)
 
         if structure_sets is not None:
             try:
@@ -712,9 +726,9 @@ class Image_Series():
         else:
             self.structure_sets = []
 
-        if self.DICOM.Modality not in VALID_MODALITIES:
+        if self.Modality not in VALID_MODALITIES:
             raise NotImplementedError("Unknown/unhandled modality "
-                                      f"{self.DICOM.Modality} in "
+                                      f"{self.Modality} in "
                                       f"series {self._series} ({self.UID=})")
 
     def __getattr__(self, attr):
@@ -723,7 +737,11 @@ class Image_Series():
         elif hasattr(self.img_stack, attr):
             return getattr(self.img_stack, attr)
 
-        raise AttributeError
+        raise AttributeError(f'{type(self).__name__} has no member "{attr}"')
+
+    @property
+    def DICOM(self):
+        return self.img_stack.DICOM
 
 
 class _M():

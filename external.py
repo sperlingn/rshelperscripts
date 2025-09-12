@@ -187,6 +187,30 @@ def _await_user_input_mb(message):
     return Show_OK(f'{message}', "Awaiting Input", ontop=True)
 
 
+class VERSION(str):
+    def __safe_number__(self, position):
+        try:
+            return int(self.split('.')[position])
+        except (IndexError, ValueError):
+            return 0
+
+    @property
+    def major(self):
+        return self.__safe_number__(0)
+
+    @property
+    def minor(self):
+        return self.__safe_number__(1)
+
+    @property
+    def build(self):
+        return self.__safe_number__(2)
+
+    @property
+    def revision(self):
+        return self.__safe_number__(3)
+
+
 try:
     from connect import RayWindow
 except ImportError:
@@ -207,12 +231,12 @@ try:
                          await_user_input as _await_user_input, set_progress)
 
     IN_RAYSTATION = True
-    RS_VERSION = get_current("ui").GetApplicationVersion()
+    RS_VERSION = VERSION(get_current("ui").GetApplicationVersion())
 
 except ImportError:
     # Replacement functions when not running in RS
     IN_RAYSTATION = False
-    RS_VERSION = "0.0"
+    RS_VERSION = VERSION("0.0.0.0")
 
     from .mock_objects import MockPatient
 
@@ -248,6 +272,8 @@ finally:
         def __init__(self, *args, **kwargs):
             self.my_args = (args, kwargs)
             self.instance
+            if RS_VERSION.major == 14:
+                _logger.warning("RS 14 is broken, don't use composite action")
 
         @property
         def instance(self):
@@ -1866,6 +1892,7 @@ class Machine(IndirectInheritanceClass):
 
 
 def get_machine(machine_ref):
+    _logging.debug(f"Getting machine {machine_ref=}")
     try:
         machine_name = f'{machine_ref.MachineReference.MachineName}'
     except AttributeError:
@@ -1873,7 +1900,15 @@ def get_machine(machine_ref):
 
     if machine_name not in _INDIRECT_MACHINE_REF:
         mach_db = get_current("MachineDB")
-        mach = Machine(mach_db.GetTreatmentMachine(machineName=machine_name))
+        gtm = mach_db.GetTreatmentMachine
+        # GetTreatmentMachine is unsafe in CompositeAction in RS2023B, for now
+        # bubble out of CA.
+        if RS_VERSION.major > 14:
+            with SuspendCompositeAction('GetTreatmentMachine'):
+                mach = Machine(gtm(machineName=machine_name))
+        else:
+            mach = Machine(gtm(machineName=machine_name))
+
         _INDIRECT_MACHINE_REF[machine_name] = mach
 
     return _INDIRECT_MACHINE_REF[machine_name]
@@ -2157,6 +2192,28 @@ def sequential_dedup_return_list(func):
             return inlist
 
     return f_out
+
+
+def populate_machines(infilter=None, exclude_rsl=True):
+    def_filter_dict = {'IsLinac': True,
+                       'HasMlc': True
+                       }
+    if infilter:
+        try:
+            def_filter_dict.update(infilter)
+        except ValueError:
+            def_filter_dict[infilter] = True
+
+    machine_db = get_current("MachineDB")
+    mach_query = machine_db.QueryCommissionedMachineInfo
+
+    filter_dict = {k: v for k, v in def_filter_dict.items() if v is not None}
+
+    machines_info_list = mach_query(Filter=filter_dict)
+
+    for machine in (m for m in machines_info_list
+                    if (not exclude_rsl or 'RSL_' not in m['Name'])):
+        get_machine(machine['Name'])
 
 
 # __all__ = [dcmread, CompositeAction, get_current]

@@ -104,8 +104,10 @@ def gap_pair_to_limit(pair_in, limits, GAP):
 _MOCKERY_MAPPINGS = {}
 
 
-def MakeMockery(root, attr, from_sequence=False):
+def MakeMockery(root, attr, from_sequence=False):  # noqa: C901
     # Makes a mockery of an object, if it is a known type and mapping.
+    # Mappings defined in _MOCKERY_MAPPINGS.  Mapping function should return a
+    # MockObject subclass
 
     # If we can't access the value, return None
     try:
@@ -118,7 +120,7 @@ def MakeMockery(root, attr, from_sequence=False):
 
     cls = val.__class__
 
-    # First, find builtins that aren't mutable types can just be copied
+    # First, find builtins that aren't mutable types that can just be copied
     if cls.__module__ in ('builtins', '__builtins__', '__builtin__'):
         if not issubclass(cls, Sequence):
             # Not a sequence, is builtin, should be safe to just use.
@@ -137,9 +139,6 @@ def MakeMockery(root, attr, from_sequence=False):
     if cls.__name__ in ('DateTime', 'Color'):
         return val
 
-    if isinstance(val, MockObject):
-        return deepcopy(val)
-
     if cls.__module__ in ('connect.connect_cpython'):
         if cls.__name__ in ('array_list',
                             'PyScriptObjectCollection'):
@@ -150,6 +149,12 @@ def MakeMockery(root, attr, from_sequence=False):
     if cls.__name__ in ('numpy.ndarray'):
         return val.tolist()
 
+    # Can use the deepcopy interface.
+    if isinstance(val, MockObject) or hasattr(val, '__deepcopy__'):
+        return deepcopy(val)
+
+    # Any other objects can be added as either functions or classes to the
+    # _MOCKERY_MAPPINGS at the end.
     if attr in _MOCKERY_MAPPINGS:
         return _MOCKERY_MAPPINGS[attr](val)
 
@@ -191,28 +196,32 @@ class MockObject(object, metaclass=MetaSlotsFromHints):
         if len(args) == 1:
             # Don't retain build fake values if we were passed an argument,
             #  instead assume that we copy it and end.
-            return self.CopyFrom(args[0])
+            self.CopyFrom(args[0])
         elif len(args) > 1:
             raise ValueError("Can only accept up to 1 non-keyword argument.")
+        else:
 
-        # Don't set any defaults for anything passed as a kwarg
-        for attr in known_keys - kwargs.keys():
-            attr_type = hints[attr]
-            val = rand_from_hint(attr_type, attr)
-            setattr(self, attr, val)
-
-        # Set values from keys passed in kwargs.
-        if kwargs:
-            excess_keys = kwargs.keys() - known_keys if known_keys else None
-            if excess_keys:
-                raise ValueError(f"'{self.__class__.__name__}' does not "
-                                 "support the following passed attributes: "
-                                 f"'{excess_keys}'")
-
-            for attr, val in ((k, kwargs[k]) for k
-                             in known_keys & kwargs.keys()):
+            # Don't set any defaults for anything passed as a kwarg
+            for attr in known_keys - kwargs.keys():
+                attr_type = hints[attr]
+                val = rand_from_hint(attr_type, attr)
                 setattr(self, attr, val)
 
+            # Set values from keys passed in kwargs.
+            if kwargs:
+                excess_keys = kwargs.keys() - known_keys
+                if known_keys and excess_keys:
+                    # If we don't know of any valid keys from hints, don't
+                    # raise the error (useful for empty mock objects)
+                    raise ValueError(
+                        f"'{self.__class__.__name__}' does not support the "
+                        f"following passed attributes: '{excess_keys}'")
+
+                for attr, val in ((k, kwargs[k]) for k
+                                  in known_keys & kwargs.keys()):
+                    setattr(self, attr, val)
+
+        self.__enforce_rules__()
 
     def __str__(self, depth=1):
         lines = []
@@ -258,7 +267,7 @@ class MockObject(object, metaclass=MetaSlotsFromHints):
             keys = set(dir(other))
 
             for attr, val in ((k, MakeMockery(other, k))
-                             for k in known_keys & keys):
+                              for k in known_keys & keys):
                 setattr(self, attr, val)
         except (ValueError, AttributeError, TypeError) as e:
             _logger.debug(f"Couldn't clone: {e}", exc_info=True)
@@ -276,7 +285,7 @@ class MockObject(object, metaclass=MetaSlotsFromHints):
 
         for attr, val in [(attr, getattr(self, attr)) for attr in attrs
                           if attr[0] != '_'
-                          and hasattr(other, attr) 
+                          and hasattr(other, attr)
                           and not callable(getattr(other, attr))]:
             try:
                 setattr(other, attr, val)
@@ -302,7 +311,6 @@ class MockObject(object, metaclass=MetaSlotsFromHints):
             except (ValueError, TypeError):
                 pass
         return out
-
 
 
 class MockOrganData(MockObject):
@@ -519,7 +527,7 @@ ArcRotationDirectionEnum = Enum('ArcRotationDirection',
                                 {'None': 'None',
                                  'Clockwise': 'Clockwise',
                                  'CounterClockwise': 'CounterClockwise'},
-                                 module=__name__, type=str)
+                                module=__name__, type=str)
 
 
 class MockBeam(MockObject):
@@ -626,6 +634,7 @@ class MockPatient(MockObject):
         if cases is not None:
             kwargs['Cases'] = cases
         super().__init__(*args, **kwargs)
+
 
 _MOCKERY_MAPPINGS.update({
     'OnStructure': MockStructure,

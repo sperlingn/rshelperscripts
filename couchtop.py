@@ -35,7 +35,8 @@ NON_HN_SITES = {"Left Breast",
                 "Left Upper Extremity",
                 "Right Upper Extremity",
                 "Left Lower Extremity",
-                "Right Lower Extremity"}
+                "Right Lower Extremity",
+                "Extremity"}
 
 SITE_SHIFT = {"Left Breast": -45.,
               "Right Breast": -45.,
@@ -355,7 +356,6 @@ class CouchTop(object):
     _tx_machines_set = None
     _board_offset = None
 
-    roi_geometries = None
     template = None
     _desc_re = re_compile(r'(?:Offset:\s(?P<Offset>\d+)'
                           r'|Tx Machines:\s(?P<TxMachines>.*)$'
@@ -367,8 +367,7 @@ class CouchTop(object):
 
     inActiveSet = False
 
-    message = None
-    perform_trim = True
+    refuse_trim = False
 
     def __init__(self, Name,
                  default_offset=None, surface_roi=None, tx_machines=None,
@@ -406,6 +405,12 @@ class CouchTop(object):
     @property
     def isPresent(self):
         return self.isValid and self.ROI_Names == self.roi_geometries.keys()
+
+    @property
+    def isPartiallyBuilt(self):
+        return self.isPresent and any([geometry.PrimaryShape is not None
+                                       for geometry
+                                       in self.roi_geometries.values()])
 
     @property
     def isBuilt(self):
@@ -497,12 +502,12 @@ class CouchTop(object):
             self._bounding_box = BoundingBox(self.roi_geometries.values())
             _logger.debug(f"Rebuilding...\n\t{self._bounding_box}")
             try:
-                _logger.debug('\n\t'.join('{}: {}'.format(g.OfRoi.Name,
-                                                          g.GetBoundingBox())
-                                          for g in
-                                          self.roi_geometries.values()))
+                _logger.debug('\n\t'.join(('BBs:', *(
+                    f'{g.OfRoi.Name}: {g.GetBoundingBox()}'
+                    for g in self.roi_geometries.values()))))
             except Exception:
-                pass
+                _logger.exception("Couldn't log...")
+
         return self._bounding_box.copy()
 
     def get_transform(self, structure_set, offset):
@@ -512,6 +517,14 @@ class CouchTop(object):
 
         top_offset = self.Top_offset
         bb_offset = point()
+
+        _logger.debug('\n\t'.join((
+            'Transform calculation:',
+            f'{pt_pos=}',
+            f'{bb_offset=}',
+            f'{self.boundingbox=}',
+            f'{top_offset=}',
+        )))
 
         if pt_pos[2] == 'S':
             bb_offset.y -= self.boundingbox.lower.y
@@ -529,9 +542,13 @@ class CouchTop(object):
 
         pt = offset + top_offset + bb_offset
 
-        _logger.debug("Transform calculation.\n\t"
-                      f'{bb_offset=}\n\t{top_offset=}\n\t{pt_pos=}\t\n'
-                      f'{pt = }')
+        _logger.debug('\n\t'.join((
+            "Transform calculation after change.",
+            f'{bb_offset=}',
+            f'{top_offset=}',
+            f'{pt_pos=}',
+            f'{pt=}',
+        )))
 
         transform = AffineMatrix(pt)
 
@@ -588,7 +605,7 @@ class CouchTop(object):
         if icase is None:
             icase = get_current("Case")
         if examination is None:
-            examination = icase.PatientModel.Examinations[0]
+            examination = get_current("Examination")
 
         structure_set = icase.PatientModel.StructureSets[examination.Name]
         case_data = get_case_comment_data(icase)
@@ -600,7 +617,7 @@ class CouchTop(object):
             create_opts = self.create_opts
             create_opts['TargetExamination'] = examination
 
-            if self.isValid:
+            if self.isPartiallyBuilt:
                 _logger.warning("Couchtop already built, removing geometry.")
                 self.remove_from_case(geometry_only=True)
 
@@ -631,14 +648,14 @@ class CouchTop(object):
             _logger.warning("No patient outline, not trimming couch model.")
             return False
 
-        if not self.perform_trim:
+        if self.refuse_trim:
             if Show_YesNo(caption="Perform Trim?",
                           defaultResult=MB_Result.No,
-                          message=(f"Trim prevented ({self.message})\n"
+                          message=(f"Trim prevented: \n{self.refuse_trim}\n\n"
                                    "Perform trim anyway?")) != MB_Result.Yes:
                 return False
             else:
-                self.peform_trim = True
+                self.refuse_trim = False
 
         patient_bb = BoundingBox(structure_set.OutlineRoiGeometry)
         box_bb = self.boundingbox + patient_bb
@@ -653,7 +670,7 @@ class CouchTop(object):
             for roi in self._rois.values():
                 roi.ab_intersect(rois_a=roi, rois_b=box)
 
-            if _logger.level != logging.DEBUG:
+            if _logger.level <= logging.DEBUG:
                 box.DeleteRoi()
 
             surface = self._rois[self.surface_roi]
@@ -666,8 +683,8 @@ class CouchTop(object):
 
     def update(self, structure_set):
         struct_rois = structure_set.RoiGeometries.Keys
-        self._rois = {roi.OfRoi.Name: ROI(roi, structure_set) for roi in
-                      structure_set.RoiGeometries
+        self._rois = {roi.OfRoi.Name: ROI(roi, structure_set)
+                      for roi in structure_set.RoiGeometries
                       if roi.OfRoi.Name in self.ROI_Names}
         self.roi_geometries = {roi_name: structure_set.RoiGeometries[roi_name]
                                for roi_name in self.ROI_Names
@@ -850,8 +867,8 @@ class CouchTop(object):
             # bottom of the CT.
             _logger.warning("Couldn't find H&N board position."
                             "  Board should be positioned manually.")
-            self.perform_trim = False
-            self.message = "Board should be positioned manually"
+            self.refuse_trim = ("H&N location not found, "
+                                "board should be positioned manually")
 
         offset = point(0, 0, 0)
         try:
@@ -864,34 +881,62 @@ class CouchTop(object):
 
         return offset
 
-    def get_offset(self, structure_set, couch_y, icase, force_z=None):
+    def get_offset(self, structure_set, couch_y, icase, force_z=None,
+                   default_centered=True):
+        if icase is None:
+            icase = get_current("Case")
+
+        pt_pos = structure_set.OnExamination.PatientPosition
+
         if force_z is None:
             examination = structure_set.OnExamination
-            series = Image_Series(examination.Series[0], structure_set)
+            series = Image_Series(examination, structure_set)
 
             couch_bb = self.boundingbox
 
             ct_z = guess_couchtop_z(series)
 
-            # Default to move the bottom of the board to the bottom of the CT
-            offset = point.Z() * (couch_bb.upper.z +
-                                  (series.minz - couch_bb.lower.z))
+            if default_centered:
+                center_z_offset = (couch_bb.size - series.size).z / 2
+            else:
+                center_z_offset = 0
+
+            # Default to move the board bottom to the CT bottom
+            # Feet first vs head first...
+            if pt_pos[0] == 'H':
+                offset = point.Z() * (couch_bb.upper.z - couch_bb.lower.z
+                                      + series.minz - center_z_offset)
+            elif pt_pos[0] == 'F':
+                offset = point.Z() * (couch_bb.lower.z - couch_bb.upper.z
+                                      + series.maxz + center_z_offset)
+            else:
+                offset = point(0, 0, 0)
+
+            _logger.debug('\n\t'.join((
+                'Initial placement info:',
+                f'{couch_bb=}',
+                f'{series.img_stack.GetBoundingBox()=}',
+                f'{offset=}',
+                f'{couch_bb.size=}',
+            )))
 
             if self.isHN:
                 offset = self.get_hn_offset(series, couch_y, ct_z)
-            elif ct_z:
+            elif ct_z is not None:
                 offset.z = ct_z
-            else:
+            elif icase.BodySite in SITE_SHIFT:
                 # Not H&N, not simple search, figure out from body site?
-                if icase is None:
-                    icase = get_current("Case")
-
-                if icase.BodySite in SITE_SHIFT:
-                    _logger.debug("Can't determine origin from CT, shifting "
-                                  "based on treatment site: "
-                                  f"{icase.BodySite} = "
-                                  f"{SITE_SHIFT[icase.BodySite]}")
-                    offset.z += SITE_SHIFT[icase.BodySite]
+                _logger.debug("Can't determine origin from CT, shifting based"
+                              " on treatment site: "
+                              f"{SITE_SHIFT[icase.BodySite]=}")
+                offset.z += SITE_SHIFT[icase.BodySite]
+            else:
+                # Couldn't figure out where the couch was, don't trim.
+                self.refuse_trim = (
+                    "Couch Z position not found through inspection nor was "
+                    f"site ({icase.BodySite}) found in the known sites:\n"
+                    f"{list(SITE_SHIFT.keys())}.\n"
+                    "Board should be positioned manually before trimming")
 
         else:
             try:
@@ -920,15 +965,13 @@ class CouchTop(object):
 
         self._apply_transform(structure_set, transform)
 
-    def remove_from_case(self, geometry_only=True):
-        if self.roi_geometries:
-            with CompositeAction("Remove {self.Name} couch from case."):
-                for geom in self.roi_geometries.values():
-                    if geom.PrimaryShape:
-                        if geometry_only:
-                            geom.DeleteGeometry()
-                        else:
-                            geom.OfRoi.DeleteRoi()
+    def remove_from_case(self, geometry_only=True, examination=None):
+        with CompositeAction("Remove {self.Name} couch from case."):
+            for roi in self._rois.values():
+                if geometry_only:
+                    roi.DeleteGeometry(Examination=examination)
+                else:
+                    roi.DeleteRoi()
 
     def machine_matches(self, inmachinename):
         inmachines = self.machine_set(inmachinename)
@@ -964,7 +1007,6 @@ class CouchTop(object):
                 f'surface_roi: {self.surface_roi}\n'
                 f'_tx_machines_set: {self._tx_machines_set}\n'
                 f'_board_offset: {self._board_offset}\n'
-                f'roi_geometries: {self.roi_geometries}\n'
                 f'template: {self.template}\n'
                 f'_bounding_box: {self._bounding_box}\n'
                 f'inActiveSet: {self.inActiveSet}\n'
@@ -1130,7 +1172,7 @@ def addcouchtoexam(icase, examination=None, plan=None,
         examination = pick_exam()
 
     structure_set = icase.PatientModel.StructureSets[examination.Name]
-    series = Image_Series(examination.Series[0])
+    series = Image_Series(examination)
 
     tops = CouchTopCollection(use_known=True)
 

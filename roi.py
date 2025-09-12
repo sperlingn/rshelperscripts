@@ -1,4 +1,5 @@
-from .external import get_current, LimitedDict, obj_name
+from .external import (get_current, LimitedDict, obj_name, RS_VERSION,
+                       IndirectInheritanceClass)
 from .points import point
 import logging
 _logger = logging.getLogger(__name__)
@@ -99,38 +100,37 @@ class ROI_Builder():
             return self.CreateROI(name, opts, **opts_ovr)
 
 
-class ROI():
+class ROI(IndirectInheritanceClass):
     # ROI helper class to store all useful functions in an easy place
     def __init__(self, roi, context=None):
         self._roi = roi
         self._geometries = {}
 
+        if hasattr(context, 'OnExamination'):
+            exam = context.OnExamination
+        else:
+            exam = get_current('Examination')
+
         if hasattr(roi, 'OfRoi'):
             # Passed an ROI geometry
-            self._roi = roi.OfRoi
+            self._roi = self._base = roi.OfRoi
             if context is None:
-                self._geometries[get_current('Examination')] = roi
+                self._geometries[exam] = roi
                 return
 
         if context and hasattr(context, 'RoiGeometries'):
-            geom = context.RoiGeometries[self.Name]
-            self._geometries[context.OnExamination] = geom
+            self._geometries[exam] = context.RoiGeometries[self.Name]
         elif context:
             try:
                 self._geometries.update(context)
             except TypeError:
-                self._geometries[get_current('Examination')] = context
+                self._geometries[exam] = context
         else:
-            self._geometries[get_current('Examination')] = None
+            self._geometries[exam] = None
 
-        # If we have an ROI set, link all of the functions for that ROI to this
-        # wrapper class instance to allow this to act like it is an ROI object
-        # without subclassing (since we don't have the superclass in python).
-        if self._roi:
-            for fn in [f for f in dir(self._roi)
-                       if (callable(getattr(self._roi, f))
-                           and not (hasattr(self, f)))]:
-                setattr(self, fn, getattr(self._roi, fn))
+    def __getitem__(self, key):
+        # Indexing will return the geometry for this ROI on an exam
+        return self._geometries[key]
 
     def create_box(self, size=1, center=0, exam=None, **kwargs):
         params = LimitedDict({'Size': point(size),
@@ -242,12 +242,20 @@ class ROI():
         return self._geometries[get_current('Examination')]
 
     def DeleteRoi(self):
-        del self._geometries
+        self._geometries = {}
         return self._roi.DeleteRoi()
 
-    def DeleteGeometry(self):
-        for geom in self.geoms:
-            geom.DeleteGeometry()
+    def DeleteGeometry(self, Examination=None):
+        if Examination is not None:
+            geoms = (self._geometries[Examination],)
+        else:
+            geoms = self.geoms
+
+        for geom in geoms:
+            if RS_VERSION.major <= 13:
+                geom.DeleteGeometry()
+            else:
+                geom.DeleteRoiGeometry()
 
     def Show(self, v2D='Contour', v3D='Shaded', DRR=True):
         vs = self._roi.RoiVisualizationSettings
