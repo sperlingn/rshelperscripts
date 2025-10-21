@@ -9,7 +9,6 @@ from typing import Type
 from zlib import decompress as zlibdecompress
 from base64 import b64decode
 from .mock_objects import MakeMockery
-from functools import total_ordering
 _logger = _logging.getLogger(__name__)
 
 
@@ -188,7 +187,6 @@ def _await_user_input_mb(message):
     return Show_OK(f'{message}', "Awaiting Input", ontop=True)
 
 
-@total_ordering
 class VERSION(str):
     def __safe_number__(self, position):
         try:
@@ -211,6 +209,9 @@ class VERSION(str):
     @property
     def revision(self):
         return self.__safe_number__(3)
+
+    def __hash__(self):
+        return super().__hash__()
 
     def __eq__(self, other):
         if isinstance(other, int):
@@ -246,6 +247,15 @@ class VERSION(str):
             return False
         elif self.revision < other.revision:
             return True
+
+    def __le__(self, other):
+        return self == other or self < other
+
+    def __gt__(self, other):
+        return not self <= other
+
+    def __ge__(self, other):
+        return self == other or self > other
 
 
 try:
@@ -382,22 +392,38 @@ finally:
     class SuspendCompositeAction:
         _clsinstance = None
         _CompositeActionClass = CompositeAction
+        _active_ca_wrapper = None
         active_action_args = None
         message = "Suspending composite action"
 
         def __init__(self, reason=None):
-            if not type(self)._clsinstance:
+            cls = type(self)
+            if not cls._clsinstance:
                 # First time being used.
-                type(self)._clsinstance = self
+                cls._clsinstance = self
 
             if reason:
                 self.message = f"{self.message}: ({reason})"
 
+        @property
+        def active_ca_wrapper(self):
+            cls = type(self)
+            return cls._active_ca_wrapper
+
+        @active_ca_wrapper.setter
+        def active_ca_wrapper(self, active_ca):
+            cls = type(self)
+            cls._active_ca_wrapper = active_ca
+
         def __enter__(self):
             cls = type(self)
+            if cls._clsinstance is not None:
+                # Only do this in the root.
+                return None
+
             ca_class = cls._CompositeActionClass
             ca_class.block()
-            if ca_class.isactive:
+            if ca_class._clsinstance is not None:
                 # Currently in a CompositeAction, suspend it.
                 _logger.info(f"{self.message}")
                 self.active_ca_wrapper = ca_class.get_active_singleton()
