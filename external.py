@@ -9,6 +9,7 @@ from typing import Type
 from zlib import decompress as zlibdecompress
 from base64 import b64decode
 from .mock_objects import MakeMockery
+from functools import total_ordering
 _logger = _logging.getLogger(__name__)
 
 
@@ -187,6 +188,7 @@ def _await_user_input_mb(message):
     return Show_OK(f'{message}', "Awaiting Input", ontop=True)
 
 
+@total_ordering
 class VERSION(str):
     def __safe_number__(self, position):
         try:
@@ -209,6 +211,41 @@ class VERSION(str):
     @property
     def revision(self):
         return self.__safe_number__(3)
+
+    def __eq__(self, other):
+        if isinstance(other, int):
+            return self.major == other
+
+        if not isinstance(other, type(self)):
+            return self == type(self)(other)
+
+        return str.__eq__(self, other)
+
+    def __lt__(self, other):
+        if isinstance(other, int):
+            return self.major < other
+
+        if not isinstance(other, type(self)):
+            return self < type(self)(other)
+
+        if self == other:
+            return False
+        elif self.major > other.major:
+            return False
+        elif self.major < other.major:
+            return True
+        elif self.minor > other.minor:
+            return False
+        elif self.minor < other.minor:
+            return True
+        elif self.build > other.build:
+            return False
+        elif self.build < other.build:
+            return True
+        elif self.revision > other.revision:
+            return False
+        elif self.revision < other.revision:
+            return True
 
 
 try:
@@ -1904,7 +1941,7 @@ def get_machine(machine_ref):
         gtm = mach_db.GetTreatmentMachine
         # GetTreatmentMachine is unsafe in CompositeAction in RS2023B, for now
         # bubble out of CA.
-        if RS_VERSION.major > 14:
+        if RS_VERSION >= 14:
             with SuspendCompositeAction('GetTreatmentMachine'):
                 mach = Machine(gtm(machineName=machine_name))
         else:

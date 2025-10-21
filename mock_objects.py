@@ -636,6 +636,10 @@ class MockPatient(MockObject):
         super().__init__(*args, **kwargs)
 
 
+class MockClinicalGoal(MockObject):
+    pass
+
+
 _MOCKERY_MAPPINGS.update({
     'OnStructure': MockStructure,
     'Patient': MockPatient,

@@ -1,5 +1,5 @@
-from .external import (dcmread, uid, SuspendCompositeAction, obj_name,
-                       get_unique_name)
+from .external import (dcmread, uid, CompositeAction, SuspendCompositeAction,
+                       obj_name, get_unique_name, RS_VERSION)
 
 from datetime import datetime
 
@@ -49,8 +49,8 @@ _EXCLUDED_ROI_TYPES = ['Support', 'Bolus']
 SERIES_ADD = 31415
 
 
-def duplicate_exam(patient, icase, exam_in, copy_structs=True,
-                   exam_name_out=None):
+def duplicate_exam_11b(patient, icase, exam_in, copy_structs=True,
+                       exam_name_out=None):
     export_params = deepcopy(_SCRIPTED_EXPORT_FOR_EXAM)
 
     new_uid_root = uid.generate_uid()[0:-13]
@@ -129,6 +129,36 @@ def duplicate_exam(patient, icase, exam_in, copy_structs=True,
 
     exam_name_out = exam_name_out if exam_name_out else obj_name(exam_in)
     exam_out.Name = get_unique_name(exam_name_out, icase.Examinations)
+
+    return exam_out
+
+
+def duplicate_exam_23b(patient, icase, exam_in, copy_structs=True,
+                       exam_name_out=None):
+    bb = exam_in.Series[0].ImageStack.GetBoundingBox()
+
+    with CompositeAction("Copy Exam"):
+        exam_in.CropImageStackAndStoreAsNewExamination(MinCorner=bb[0],
+                                                       MaxCorner=bb[1])
+
+        exam_out = icase.Examinations[len(icase.Examinations)-1]
+
+        exam_name_out = exam_name_out if exam_name_out else obj_name(exam_in)
+        exam_out.Name = get_unique_name(exam_name_out, icase.Examinations)
+
+    return exam_out
+
+
+def duplicate_exam(patient, icase, exam_in, copy_structs=True,
+                   exam_name_out=None):
+
+    if RS_VERSION < 14:
+        exam_out = duplicate_exam_11b(patient, icase, exam_in, copy_structs,
+                                      exam_name_out)
+
+    elif RS_VERSION == 14:
+        exam_out = duplicate_exam_23b(patient, icase, exam_in, copy_structs,
+                                      exam_name_out)
 
     if copy_structs:
         roi_names = [roi.Name for roi in icase.PatientModel.RegionsOfInterest

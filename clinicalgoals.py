@@ -88,7 +88,6 @@ def copy_clinical_goals(plan_in, plan_out):
         evalsetup_out.AddClinicalGoal(**fn_params)
 
 
-# Reduced and copied from evalfns class in rshelperscripts
 class ClinicalGoal():
     _fn = None
     evals = None
@@ -106,6 +105,9 @@ class ClinicalGoal():
         'ConformityIndex': '_CI {goaldir} {al}: {value}',
         'HomogeneityIndex': '_HI {goaldir} {al}: {value}'
     }
+
+    # TODO: Add subscripting for an evaluation to allow a return of the string
+    # of that (and add it to the eval list)
 
     def __init__(self, rs_dose_eval_fn, dose=None):
         self._fn = rs_dose_eval_fn
