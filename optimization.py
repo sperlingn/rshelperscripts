@@ -557,13 +557,27 @@ def removefailedobjectives(options, roi_conflicts):
 def scaleobjectives(scaledoses, mindvhlimiters):
     # Parse if the optimization needs to be rescaled per target.
     for roi, origDoseLevel, optfn in scaledoses:
-        gdarv = optfn.OfDoseDistribution.GetDoseAtRelativeVolumes
+        if hasattr(optfn, 'OfDoseDistribution'):
+            ofdd = optfn.OfDoseDistribution
+        elif hasattr(optfn, 'OfDoseDistributions'):
+            # TODO: Consider evaluating more than just the first distribution.
+            ofdd = optfn.OfDoseDistributions[0]
+            logger.debug(f"Using dose distribution '{ofdd}' for '{optfn}'")
+        else:
+            # Don't scale objectives because we can't find the right
+            # distribution to scale from
+            logger.warning("Unable find correct distribution to use to scale"
+                           " dose objective.")
+            logger.debug(f"{optfn=} {roi=}")
+            return False
+
+        gdarv = ofdd.GetDoseAtRelativeVolumes
 
         pv = optfn.DoseFunctionParameters.PercentVolume
         dl = optfn.DoseFunctionParameters.DoseLevel
 
         try:
-            bs = optfn.OfDoseDistribution.ForBeamSet
+            bs = ofdd.ForBeamSet
             nfx = bs.FractionationPattern.NumberOfFractions
         except AttributeError:
             nfx = 1
