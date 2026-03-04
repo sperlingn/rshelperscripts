@@ -4,7 +4,7 @@ from .external import (CompositeAction as CompositeAction, ObjectDict,
                        params_from_mapping, get_machine, obj_name, clamp,
                        rs_getattr, rs_hasattr, sequential_dedup_return_list,
                        dup_object_param_values, CallLaterList, get_unique_name,
-                       Show_OK, renumber_beams, RS_VERSION)
+                       Show_OK, renumber_beams, RS_VERSION, get_current)
 from .examinations import duplicate_exam as _duplicate_exam
 from .roi import ROI_Builder
 from .i18n import BEAMNAME_QUADRANT_TO_NAME, BEAMNAME_BREAST_SC_PA
@@ -158,7 +158,6 @@ _ISOCENTER_PARAM_MAPPING = {
     'Color': 'Annotation.DisplayColor'
 }
 
-
 _OPTIMIZATION_FN_PARAM_MAPPING = {
     'FunctionType': cll.get_opt_fn_type,
     'RoiName': 'ForRegionOfInterest.Name',
@@ -170,7 +169,6 @@ _OPTIMIZATION_FN_PARAM_MAPPING = {
     'UseRbeDose': None
 }
 
-
 _OPTIMIZATION_FN_DEFAULT = {
     'IsConstraint': False,
     'RestrictAllBeamsIndividually': False,
@@ -179,7 +177,6 @@ _OPTIMIZATION_FN_DEFAULT = {
     'RestrictToBeamSet': None,
     'UseRbeDose': False
 }
-
 
 _OPTIMIZATION_FN_TYPES = {
     'MinDose',
@@ -194,12 +191,17 @@ _OPTIMIZATION_FN_TYPES = {
     'UniformityConstraint'
 }
 
-
 _OPTIMIZATION_FN_PARAM_EXCLUDE = {
     'LqModelParameters',
     'DoseGridStructuresSource',
     'ForTargetRoi',
     'OfTargetDoseGridRoi'
+}
+
+_OPTIMIZATION_FN_PARAM_DOSETYPE = {
+    'HighDoseLevel',
+    'LowDoseLevel',
+    'DoseLevel'
 }
 
 _OPTIMIZATION_PARAM_EXCLUDE = {
@@ -535,6 +537,15 @@ def beam_opt_settings_from_plan(plan, beamset, beam):
     return None
 
 
+def get_plan_for_bs_from_course(beamset_in, case_in):
+    try:
+        return [plan for plan in case_in.TreatmentPlans
+                if any([bs_equals(beamset_in, bs) for bs in plan.BeamSets])][0]
+    except IndexError:
+        raise IndexError(f"Cannot find beamset '{obj_name(beamset_in)}' in"
+                         f" case '{obj_name(case_in)}'.")
+
+
 def get_opts_for_bs(plan, beamset):
     # Returns a list of PlanOptmizations that optimize this beamset.
     bsid = beamset.BeamSetIdentifier()
@@ -747,11 +758,7 @@ def copy_plan_optimizations(plan_in, plan_out):
     _logger.debug("Copying optimization objectives "
                   f"from {plan_in} to {plan_out}.")
 
-    n_opts_in = len(plan_in.PlanOptimizations)
-    n_opts_out = len(plan_out.PlanOptimizations)
-    _logger.debug(f"{n_opts_in=}, {n_opts_out=}")
-
-    if n_opts_in != n_opts_out:
+    if len(plan_in.PlanOptimizations) != len(plan_out.PlanOptimizations):
         raise ValueError("Different number of optimization sets. "
                          "Cannot continue.")
 
@@ -762,6 +769,56 @@ def copy_plan_optimizations(plan_in, plan_out):
             copy_optimizations(opt_in, opt_out)
 
 
+def copy_beamset_optimizations(beamset_in, beamset_out,
+                               clear_out=True, scale_doses=True,
+                               plan=None, case=None,
+                               plan_in=None, plan_out=None,
+                               case_in=None, case_out=None):
+
+    _logger.debug("Copying optimization objectives "
+                  f"from {beamset_in} to {beamset_out}.")
+
+    if plan and not plan_in and not plan_out:
+        plan_in = plan_out = plan
+
+    if not (case or case_in or case_out or plan or plan_in or plan_out):
+        # Fall back to using the current case
+        case = get_current("Case")
+
+    # Decide how to find the PlanOptimizations for these plans
+    if case and not case_in and not case_out:
+        case_in = case_out = case
+
+    # Find the plan_in and plan_out in the case from the beamset_in and
+    #  beamset_out
+    if case_in and not plan_in:
+        plan_in = get_plan_for_bs_from_course(beamset_in, case_in)
+
+    if case_out and not plan_out:
+        plan_out = get_plan_for_bs_from_course(beamset_out, case_out)
+
+    opts_in = get_opts_for_bs(plan_in, beamset_in)
+    opts_out = get_opts_for_bs(plan_out, beamset_out)
+
+    if len(opts_in) != len(opts_out):
+        raise ValueError("Different number of optimization sets. "
+                         "Cannot continue.")
+
+    scaling = None
+
+    if scale_doses:
+        ppdr_out = beamset_out.Prescription.PrimaryPrescriptionDoseReference
+        ppdr_in = beamset_in.Prescription.PrimaryPrescriptionDoseReference
+        scaling = ppdr_out.DoseValue / ppdr_in.DoseValue
+
+    with CompositeAction("Copy Optimizations from "
+                         f"{obj_name(beamset_in)} to {obj_name(beamset_out)}"):
+        for opt_in, opt_out in zip(opts_in, opts_out):
+            copy_opt_functions(opt_in, opt_out, clear_out)
+            if scale_doses and scaling != 1:
+                scale_optimization_doses(opt_out, scaling)
+
+
 def copy_optimizations(opt_in, opt_out):
     with CompositeAction(f"Copy Optimizations from {opt_in} to {opt_out}"):
         copy_opt_functions(opt_in, opt_out)
@@ -770,8 +827,17 @@ def copy_optimizations(opt_in, opt_out):
                             opt_out.OptimizationParameters)
 
 
-def copy_opt_functions(opt_in, opt_out):
-    opt_out.ClearConstituentFunctions()
+def copy_opt_functions(opt_in, opt_out, clear_out=True):
+    """
+    Copy the optimization functions from opt_in to opt_out, optionally removing
+    all existing functions in opt_out if clear_out is True
+
+    opt_in: plan.PlanOptimization object in
+    opt_out: plan.PlanOptimization object out
+    clear_out: remove all existing optimizations in opt_out (default: True)
+    """
+    if clear_out:
+        opt_out.ClearConstituentFunctions()
 
     opt_beamsets_out = [bs.DicomPlanLabel for bs in opt_out.OptimizedBeamSets]
     # Allow list of beamsets to include None for composite or single opts
@@ -817,6 +883,16 @@ def copy_opt_functions(opt_in, opt_out):
                                 excludes=_OPTIMIZATION_FN_PARAM_EXCLUDE)
 
 
+def scale_optimization_doses(opt_in, scaling):
+    """
+    Scales all dose related optmization functions by scaling
+    """
+    for fn_in in opt_in.Objective.ConstituentFunctions:
+        dfp_in = fn_in.DoseFunctionParameters
+        for param in (set(dir(dfp_in)) & _OPTIMIZATION_FN_PARAM_DOSETYPE):
+            setattr(dfp_in, param, getattr(dfp_in, param) * scaling)
+
+
 def copy_opt_parameters(optparam_in, optparam_out):
 
     # Duplicate basic objects first
@@ -832,7 +908,7 @@ def copy_opt_parameters(optparam_in, optparam_out):
     for tss_name in tss_dict_out & tss_dict_in:
         copy_opt_tss(tss_dict_in[tss_name], tss_dict_out[tss_name])
 
-    # For robustness, try adding any additional exams present ing the
+    # For robustness, try adding any additional exams present in the
     # PatientGeometryUncertaintyParameters.Examinations collection.
     try:
         rob_in = optparam_in.RobustnessParameters

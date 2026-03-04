@@ -1785,6 +1785,29 @@ def pick_plan(plans=None, include_current=True, default=None,
     return pick_list(plans, message, current=current, default=default)
 
 
+def pick_beamset(beamsets=None, include_current=True, default=None,
+                 message="Select BeamSet:"):
+    try:
+        current_bs = get_current("BeamSet")
+        current = (f'{obj_name(get_current("Plan"))}: '
+                   f'{obj_name(current_bs)}')
+    except InvalidDataException:
+        _logger.debug("No current beamset selected.")
+        current = None
+
+    _logger.debug(f"{current=}")
+
+    beamset_picks = beamsets if beamsets else {
+        f'{obj_name(plan)}: {obj_name(beamset)}': beamset
+        for plan in get_current("Case").TreatmentPlans
+        for beamset in plan.BeamSets
+        if (include_current
+            or current_bs.BeamSetIdentifier() != beamset.BeamSetIdentifier())}
+    selected = pick_list(beamset_picks, message,
+                         current=current, default=default)
+    return selected if (beamsets or not selected) else beamset_picks[selected]
+
+
 def pick_machine(current=None, default=None, match_on=None,
                  exclude_current=False, message="Select machine:"):
     def_filter_dict = {'IsLinac': True,
