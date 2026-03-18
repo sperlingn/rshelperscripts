@@ -1398,6 +1398,8 @@ class BeamReorderDialog(GenericReorderDialog):
     FirstBeamNo = None  # Text
 
     def __init__(self, list_in, results):
+        # Sort beams by beam.Number
+        list_in = sorted(list_in, key=lambda beam: beam.Number)
         super().__init__(list_in, results)
 
         if 'description' in results:
@@ -1655,7 +1657,8 @@ class SegmentReorderDialog(GenericReorderDialog):
 
 
 def renumber_beams(beamset, dialog=False):
-    beam_map = {beam.Number: beam for beam in beamset.Beams}
+    ubm = {beam.Number: beam for beam in beamset.Beams}
+    beam_map = {n: ubm[n] for n in sorted(ubm)}
     beam_nos = list(beam_map)
     non_sequential = any(map(lambda x, y: y != x+1,
                              beam_nos[:-1], beam_nos[1:]))

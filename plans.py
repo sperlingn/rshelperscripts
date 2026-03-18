@@ -1203,15 +1203,16 @@ def rename_beams(beamset, icase, dialog=True, do_rename=True):
 
                 name_map = beamname_map(beamset, icase)
 
+                if all([beam['Name'] == beam['NewName']
+                        for beam in name_map.values()]):
+                    # No changes made, bubble out to keep from changing plan
+                    raise Warning("Beams alredy correct, No changes made.")
+
                 set_beamnames_to_number(beamset)
 
                 for beam in beamset.Beams:
                     beam.Name = name_map[beam.Number]['NewName']
 
-                if all([beam['Name'] == beam['NewName']
-                        for beam in name_map.values()]):
-                    # No changes made, bubble out to keep from changing plan
-                    raise Warning("Beams alredy correct, No changes made.")
         except Warning as w:
             if dialog:
                 Show_OK(w, "Beam Rename")
