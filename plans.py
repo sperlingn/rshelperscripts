@@ -55,6 +55,7 @@ _BS_PARAM_MAPPING = {
 
 _BS_PARAM_DEFAULT = {
     'ExaminationName': None,  # Needs to be set from new plan
+    'MachineName': '',
     'UseLocalizationPointAsSetupIsocenter': False,
     'UseUserSelectedIsocenterSetupIsocenter': False,
     'RbeModelName': None,
@@ -253,6 +254,9 @@ def get_technique_from_beamset(beamset):
             return 'SMLC'
         elif beamset.DeliveryTechnique == 'DMLC':
             return 'DMLC'
+        else:
+            # TODO: Decide if we should raise an exception or use a default.
+            return 'VMAT'
 
     elif beamset.PlanGenerationTechnique == 'Conformal':
         if beamset.DeliveryTechnique == 'SMLC':
@@ -261,6 +265,9 @@ def get_technique_from_beamset(beamset):
             return 'StaticArc'
         elif beamset.DeliveryTechnique == 'DynamicArc':
             return 'ConformalArc'
+        else:
+            # TODO: Decide if we should raise an exception or use a default.
+            return 'Conformal'
 
     else:
         raise NotImplementedError("Couldn't determine beamset delivery")
@@ -436,12 +443,15 @@ def copy_plan_to_plan(plan_in, plan_out,
                 exclude_segments=exclude_segments,
                 forced_machine=forced_machine, keep_beams=keep_beams)
 
+    _logger.debug("Done Copying beamsets.")
     # Done with the placeholder beamset.
     if tempbs:
         tempbs.DeleteBeamSet()
 
+    _logger.debug("Prepare to copy clinical goals.")
     copy_clinical_goals(plan_in, plan_out)
 
+    _logger.debug("Prepare to copy optimizations.")
     copy_plan_optimizations(plan_in, plan_out)
 
     return plan_out
@@ -457,9 +467,11 @@ def copy_bs(plan_in, beamset_in, plan_out,
     if forced_machine is not None:
         params['MachineName'] = forced_machine
 
-    _logger.debug(f"Adding new beamset with {params=}")
+    if params['Modality'] == 'Unknown':
+        # TODO: Try to handle imported dose plans better.
+        params['Modality'] = 'Photons'
 
-    final_technique = params['TreatmentTechnique']
+    _logger.debug(f"Adding new beamset with {params=}")
 
     plan_out.AddNewBeamSet(**params)
 
@@ -467,21 +479,25 @@ def copy_bs(plan_in, beamset_in, plan_out,
 
     copy_rx(beamset_in, beamset_out)
 
+    changed_technique = False
     if 'Arc' in beamset_in.DeliveryTechnique and \
             not native_copy_ok(beamset_in, beamset_out):
         # Some type of arc, for now beamset_out must be set to conformal arc to
         # allow creation of segments.
+        changed_technique = params['TreatmentTechnique']
         beamset_out.SetTreatmentTechnique(Technique='ConformalArc')
 
-    if keep_beams:
+    _logger.debug("Prepare to copy beams.")
+    if keep_beams and beamset_in.Beams and len(beamset_in.Beams) > 0:
         copy_beams(plan_in, beamset_in, plan_out, beamset_out,
                    exclude_segments=exclude_segments)
 
-    # After copying beams, set technique back to intended.
-    if beamset_out.DeliveryTechnique != final_technique:
-        beamset_out.SetTreatmentTechnique(Technique=final_technique)
+    _logger.debug("After copying beams, set technique back to intended.")
+    if changed_technique:
+        beamset_out.SetTreatmentTechnique(Technique=changed_technique)
 
     # Dose Grid
+    _logger.debug("Update Dosegrid.")
     dg_params = params_from_dosegrid(beamset_in.GetDoseGrid())
     beamset_out.UpdateDoseGrid(**dg_params)
 
@@ -947,9 +963,13 @@ def copy_opt_tss(tss_in, tss_out):
     _logger.debug(f"Copying TreatmentSetupSettings {tss_in} to {tss_out}")
 
     # Copy SegmentConversion objects
-    dup_object_param_values(tss_in.SegmentConversion,
-                            tss_out.SegmentConversion,
-                            sub_objs=['ArcConversionProperties'])
+    try:
+        dup_object_param_values(tss_in.SegmentConversion,
+                                tss_out.SegmentConversion,
+                                sub_objs=['ArcConversionProperties'])
+    except TypeError:
+        _logger.info(f"Nothing to copy from {tss_in}.")
+        return
 
     # Build matching BeamSettings based on obj_name(BS.ForBeam)
     bss_dict_in = ObjectDict(tss_in.BeamSettings)

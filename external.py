@@ -1718,7 +1718,11 @@ def guess_name_id(obj_collection, first_guess=None):
     if first_guess:
         guess_list.append(first_guess)
 
-    first_obj = next(iter(obj_collection))
+    try:
+        first_obj = next(iter(obj_collection))
+    except StopIteration:
+        raise ValueError("Unable to guess unique name id.")
+
     guess_list += [attr for attr in dir(first_obj) if attr[0:3] == 'For']
 
     for guess in guess_list:
@@ -2005,6 +2009,10 @@ def get_machine(machine_ref):
         _INDIRECT_MACHINE_REF[machine_name] = mach
 
     return _INDIRECT_MACHINE_REF[machine_name]
+
+
+def get_known_machines():
+    return [k for k in _INDIRECT_MACHINE_REF]
 
 
 def pick_site(sites=None, current=None, default=None):
