@@ -470,7 +470,7 @@ def copy_bs(plan_in, beamset_in, plan_out,
                exclude_segments=exclude_segments)
 
     # After copying beams, set technique back to intended.
-    if params['TreatmentTechnique'] != final_technique:
+    if beamset_out.DeliveryTechnique != final_technique:
         beamset_out.SetTreatmentTechnique(Technique=final_technique)
 
     # Dose Grid

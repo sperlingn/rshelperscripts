@@ -149,6 +149,22 @@ def duplicate_exam_23b(patient, icase, exam_in, copy_structs=True,
     return exam_out
 
 
+def copy_points(icase, exam_in, exam_out):
+    structsets_in = [ss for ss in icase.PatientModel.StructureSets
+                     if ss.OnExamination.Name == exam_in.Name]
+    structsets_out = [ss for ss in icase.PatientModel.StructureSets
+                     if ss.OnExamination.Name == exam_out.Name]
+
+    if len(structsets_in) != 1:
+        raise ValueError("Expected only one structset per exam in.")
+
+    ss_in = structsets_in[0]
+
+    for poig_in in ss_in.PoiGeometries:
+        for ss_out in structsets_out:
+            ss_out.PoiGeometries[poig_in.OfPoi.Name].Point = poig_in.Point
+
+
 def duplicate_exam(patient, icase, exam_in, copy_structs=True,
                    exam_name_out=None):
 
@@ -171,5 +187,7 @@ def duplicate_exam(patient, icase, exam_in, copy_structs=True,
             'TargetExaminationNamesToSkipAddedReg': [exam_out.Name]
         }
         icase.PatientModel.CopyRoiGeometries(**copy_params)
+
+        copy_points(icase, exam_in, exam_out)
 
     return exam_out
