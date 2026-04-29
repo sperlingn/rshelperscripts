@@ -398,7 +398,7 @@ finally:
 
         def __init__(self, reason=None):
             cls = type(self)
-            if not cls._clsinstance:
+            if cls._clsinstance is None:
                 # First time being used.
                 cls._clsinstance = self
 
@@ -417,8 +417,9 @@ finally:
 
         def __enter__(self):
             cls = type(self)
-            if cls._clsinstance is not None:
+            if cls._clsinstance != self:
                 # Only do this in the root.
+                _logger.debug("Can only be in root of SuspendCompositeAction")
                 return None
 
             ca_class = cls._CompositeActionClass
@@ -429,6 +430,8 @@ finally:
                 self.active_ca_wrapper = ca_class.get_active_singleton()
                 # Exit the composite action without an error.
                 self.active_ca_wrapper.__exit__(None, None, None)
+            else:
+                _logger.info(f"Not in a composite action ({self.message}).")
 
             return None
 
