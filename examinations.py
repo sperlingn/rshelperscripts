@@ -153,7 +153,7 @@ def copy_points(icase, exam_in, exam_out):
     structsets_in = [ss for ss in icase.PatientModel.StructureSets
                      if ss.OnExamination.Name == exam_in.Name]
     structsets_out = [ss for ss in icase.PatientModel.StructureSets
-                     if ss.OnExamination.Name == exam_out.Name]
+                      if ss.OnExamination.Name == exam_out.Name]
 
     if len(structsets_in) != 1:
         raise ValueError("Expected only one structset per exam in.")

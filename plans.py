@@ -371,22 +371,28 @@ def params_from_plan(plan):
 
 def copy_plan_to_duplicate_exam(patient, icase, plan_in,
                                 exam_out_name=None, exclude_segments=True,
-                                forced_machine=None):
+                                forced_machine=None,
+                                keep_beams=True,
+                                plan_out_name=None):
     exam_in = plan_in.BeamSets[0].GetPlanningExamination()
     exam_out = _duplicate_exam(patient, icase, exam_in,
                                exam_name_out=exam_out_name)
 
     return copy_plan_to_exam(icase, plan_in, exam_out,
                              exclude_segments=exclude_segments,
-                             forced_machine=forced_machine)
+                             forced_machine=forced_machine,
+                             keep_beams=keep_beams,
+                             plan_out_name=plan_out_name)
 
 
 def copy_plan_to_exam(icase, plan_in, exam_out, exclude_segments=False,
-                      forced_machine=None):
+                      forced_machine=None, keep_beams=True,
+                      plan_out_name=None):
     plan_params = params_from_plan(plan_in)
 
-    plan_out_name = get_unique_name(f'{plan_in.Name} (dup)',
-                                    icase.TreatmentPlans)
+    plan_out_name = get_unique_name(
+        plan_out_name if plan_out_name else f'{plan_in.Name} (dup)',
+        icase.TreatmentPlans)
 
     plan_params['ExaminationName'] = exam_out.Name
 
@@ -398,14 +404,15 @@ def copy_plan_to_exam(icase, plan_in, exam_out, exclude_segments=False,
         plan_out = icase.AddNewPlan(**plan_params)
         copy_plan_to_plan(plan_in, plan_out, exam_out,
                           exclude_segments=exclude_segments,
-                          forced_machine=forced_machine)
+                          forced_machine=forced_machine,
+                          keep_beams=keep_beams)
 
     return icase.TreatmentPlans[plan_out_name]
 
 
 def copy_plan_to_plan(plan_in, plan_out,
                       exam_out=None, exclude_segments=False,
-                      forced_machine=None):
+                      forced_machine=None, keep_beams=True):
 
     tempbs = None
     if len(plan_out.BeamSets) > 1:
@@ -427,7 +434,7 @@ def copy_plan_to_plan(plan_in, plan_out,
     for bs in plan_in.BeamSets:
         copy_bs(plan_in, bs, plan_out, exam_out.Name,
                 exclude_segments=exclude_segments,
-                forced_machine=forced_machine)
+                forced_machine=forced_machine, keep_beams=keep_beams)
 
     # Done with the placeholder beamset.
     if tempbs:
@@ -442,7 +449,7 @@ def copy_plan_to_plan(plan_in, plan_out,
 
 def copy_bs(plan_in, beamset_in, plan_out,
             examination_name=None, exclude_segments=False,
-            forced_machine=None):
+            forced_machine=None, keep_beams=True):
     _logger.debug(f"Copying {beamset_in} to {plan_out} as new beamset.")
 
     params = params_from_beamset(beamset_in, examination_name)
@@ -466,8 +473,9 @@ def copy_bs(plan_in, beamset_in, plan_out,
         # allow creation of segments.
         beamset_out.SetTreatmentTechnique(Technique='ConformalArc')
 
-    copy_beams(plan_in, beamset_in, plan_out, beamset_out,
-               exclude_segments=exclude_segments)
+    if keep_beams:
+        copy_beams(plan_in, beamset_in, plan_out, beamset_out,
+                   exclude_segments=exclude_segments)
 
     # After copying beams, set technique back to intended.
     if beamset_out.DeliveryTechnique != final_technique:
@@ -478,6 +486,20 @@ def copy_bs(plan_in, beamset_in, plan_out,
     beamset_out.UpdateDoseGrid(**dg_params)
 
     return beamset_out
+
+
+def copy_bs_dose(beamset_in, beamset_out):
+    # Should do checking for dose grid, but naive right now.
+    try:
+        # Dose Grid
+        dg_params = params_from_dosegrid(beamset_in.GetDoseGrid())
+        beamset_out.UpdateDoseGrid(**dg_params)
+
+        dose_in = beamset_in.FractionDose.DoseValues.DoseData.flatten()
+        beamset_out.FractionDose.SetDoseValues(Dose=dose_in,
+                                               CalculationInfo='Copied dose')
+    except (ValueError, AttributeError):
+        pass
 
 
 def copy_rx(beamset_in, beamset_out):
@@ -931,7 +953,11 @@ def copy_opt_tss(tss_in, tss_out):
 
     # Build matching BeamSettings based on obj_name(BS.ForBeam)
     bss_dict_in = ObjectDict(tss_in.BeamSettings)
-    bss_dict_out = ObjectDict(tss_out.BeamSettings)
+
+    try:
+        bss_dict_out = ObjectDict(tss_out.BeamSettings)
+    except StopIteration:
+        return
 
     for bss_name in bss_dict_in & bss_dict_out:
         dup_object_param_values(bss_dict_in[bss_name], bss_dict_out[bss_name],
