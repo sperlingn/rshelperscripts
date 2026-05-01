@@ -393,7 +393,7 @@ def copy_plan_to_duplicate_exam(patient, icase, plan_in,
 
 
 def copy_plan_to_exam(icase, plan_in, exam_out, exclude_segments=False,
-                      forced_machine=None, keep_beams=True,
+                      forced_machine=None, keep_beams=True, keep_opt=True,
                       plan_out_name=None):
     plan_params = params_from_plan(plan_in)
 
@@ -412,14 +412,14 @@ def copy_plan_to_exam(icase, plan_in, exam_out, exclude_segments=False,
         copy_plan_to_plan(plan_in, plan_out, exam_out,
                           exclude_segments=exclude_segments,
                           forced_machine=forced_machine,
-                          keep_beams=keep_beams)
+                          keep_beams=keep_beams, keep_opt=keep_opt)
 
     return icase.TreatmentPlans[plan_out_name]
 
 
 def copy_plan_to_plan(plan_in, plan_out,
                       exam_out=None, exclude_segments=False,
-                      forced_machine=None, keep_beams=True):
+                      forced_machine=None, keep_beams=True, keep_opt=True):
 
     tempbs = None
     if len(plan_out.BeamSets) > 1:
@@ -451,8 +451,11 @@ def copy_plan_to_plan(plan_in, plan_out,
     _logger.debug("Prepare to copy clinical goals.")
     copy_clinical_goals(plan_in, plan_out)
 
-    _logger.debug("Prepare to copy optimizations.")
-    copy_plan_optimizations(plan_in, plan_out)
+    if keep_opt:
+        _logger.debug("Prepare to copy optimizations.")
+        copy_plan_optimizations(plan_in, plan_out)
+    else:
+        _logger.debug("Skipping optimizations.")
 
     return plan_out
 
@@ -971,12 +974,18 @@ def copy_opt_tss(tss_in, tss_out):
         _logger.info(f"Nothing to copy from {tss_in}.")
         return
 
-    # Build matching BeamSettings based on obj_name(BS.ForBeam)
-    bss_dict_in = ObjectDict(tss_in.BeamSettings)
+    try:
+        # Build matching BeamSettings based on obj_name(BS.ForBeam)
+        bss_dict_in = ObjectDict(tss_in.BeamSettings)
+    except IndexError:
+        _logger.info(f"No BeamSettings to copy from {tss_in}.")
+        return
 
     try:
+        # Build matching BeamSettings based on obj_name(BS.ForBeam)
         bss_dict_out = ObjectDict(tss_out.BeamSettings)
-    except StopIteration:
+    except IndexError:
+        _logger.info(f"No beams to copy to {tss_out}.")
         return
 
     for bss_name in bss_dict_in & bss_dict_out:

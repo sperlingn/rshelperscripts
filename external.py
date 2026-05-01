@@ -1721,7 +1721,7 @@ def guess_name_id(obj_collection, first_guess=None):
     try:
         first_obj = next(iter(obj_collection))
     except StopIteration:
-        raise ValueError("Unable to guess unique name id.")
+        raise IndexError(f"{obj_collection=} does not have a first object.")
 
     guess_list += [attr for attr in dir(first_obj) if attr[0:3] == 'For']
 
