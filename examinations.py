@@ -49,7 +49,7 @@ _EXCLUDED_ROI_TYPES = ['Support', 'Bolus']
 SERIES_ADD = 31415
 
 
-def duplicate_exam_11b(patient, icase, exam_in, copy_structs=True,
+def duplicate_exam_11b(patient, icase, exam_in,
                        exam_name_out=None):
     export_params = deepcopy(_SCRIPTED_EXPORT_FOR_EXAM)
 
@@ -133,7 +133,7 @@ def duplicate_exam_11b(patient, icase, exam_in, copy_structs=True,
     return exam_out
 
 
-def duplicate_exam_23b(patient, icase, exam_in, copy_structs=True,
+def duplicate_exam_23b(patient, icase, exam_in,
                        exam_name_out=None):
     bb = exam_in.Series[0].ImageStack.GetBoundingBox()
 
@@ -166,19 +166,22 @@ def copy_points(icase, exam_in, exam_out):
 
 
 def duplicate_exam(patient, icase, exam_in, copy_structs=True,
+                   excluded_roi_types=_EXCLUDED_ROI_TYPES,
                    exam_name_out=None):
 
     if RS_VERSION < 14:
-        exam_out = duplicate_exam_11b(patient, icase, exam_in, copy_structs,
-                                      exam_name_out)
+        exam_out = duplicate_exam_11b(patient, icase, exam_in, exam_name_out)
 
-    elif RS_VERSION == 14:
-        exam_out = duplicate_exam_23b(patient, icase, exam_in, copy_structs,
-                                      exam_name_out)
+    elif RS_VERSION >= 14:
+        exam_out = duplicate_exam_23b(patient, icase, exam_in, exam_name_out)
 
     if copy_structs:
-        roi_names = [roi.Name for roi in icase.PatientModel.RegionsOfInterest
-                     if roi.Type not in _EXCLUDED_ROI_TYPES]
+        pm = icase.PatientModel
+        structset = pm.StructureSets[exam_in.Name]
+        roi_names = [geom.OfRoi.Name for geom in structset.RoiGeometries
+                     if geom.PrimaryShape is not None
+                     and not (excluded_roi_types
+                              and geom.OfRoi.Type in excluded_roi_types)]
         copy_params = {
             'SourceExamination': exam_in,
             'TargetExaminationNames': [exam_out.Name],
