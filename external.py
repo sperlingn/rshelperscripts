@@ -1766,17 +1766,21 @@ def pick_list(obj_list, description="Select One", current=None, default=None):
 
 
 def pick_exam(exams=None, include_current=True, default=None,
-              message="Select Exam:"):
+              exclude=None, message="Select Exam:"):
     try:
         current = obj_name(get_current("Examination"))
     except InvalidDataException:
         _logger.debug("No current examination selected.")
         current = None
 
-    exams = exams if exams else [exam for exam in
-                                 get_current("Case").Examinations
-                                 if include_current
-                                 or obj_name(exam) != obj_name(current)]
+    if exclude:
+        exclude = [obj_name(exam) for exam in exclude]
+
+    if not exams:
+        exams = [exam for exam in
+                 get_current("Case").Examinations
+                 if ((include_current or obj_name(exam) != current)
+                     and not (exclude and obj_name(exam) in exclude))]
     return pick_list(exams, message, current=current, default=default)
 
 
@@ -1865,6 +1869,28 @@ def pick_machine(current=None, default=None, match_on=None,
 
     return pick_list(machines, message,
                      current=current, default=default)
+
+
+def pick_roi(rois=None, default=None, exclude_types=None, include_types=None,
+             message="Select an ROI"):
+    """
+    Dialog to select an ROI from the list.
+
+    exclude_types [List]: exlude any ROIs with this type
+    include_types [List]: if set, ONLY include rois of this type.
+    """
+    if not rois:
+        rois = get_current("Case").PatientModel.RegionsOfInterest
+    if exclude_types or include_types:
+        try:
+            rois = [roi for roi in rois
+                    if not (exclude_types and roi.Type in exclude_types)
+                    and (not include_types or roi.Type in include_types)]
+        except AttributeError:
+            _logger.warning('exclude_types only possible when passed a list of'
+                            f' rois, but passed {rois=}')
+
+    return pick_list(rois, message, default=default)
 
 
 @dataclass
