@@ -4,9 +4,10 @@ from .external import (CompositeAction as CompositeAction, ObjectDict,
                        params_from_mapping, get_machine, obj_name, clamp,
                        rs_getattr, rs_hasattr, sequential_dedup_return_list,
                        dup_object_param_values, CallLaterList, get_unique_name,
-                       Show_OK, renumber_beams, RS_VERSION, get_current)
-from .examinations import duplicate_exam as _duplicate_exam
-from .roi import ROI_Builder
+                       Show_OK, renumber_beams, RS_VERSION, get_current,
+                       pick_roi)
+from .examinations import duplicate_exam
+from .roi import ROI_Builder, setup_robust_contours
 from .i18n import BEAMNAME_QUADRANT_TO_NAME, BEAMNAME_BREAST_SC_PA
 from difflib import get_close_matches
 # from .points import point as _point
@@ -382,8 +383,8 @@ def copy_plan_to_duplicate_exam(patient, icase, plan_in,
                                 keep_beams=True,
                                 plan_out_name=None):
     exam_in = plan_in.BeamSets[0].GetPlanningExamination()
-    exam_out = _duplicate_exam(patient, icase, exam_in,
-                               exam_name_out=exam_out_name)
+    exam_out = duplicate_exam(patient, icase, exam_in,
+                              exam_name_out=exam_out_name)
 
     return copy_plan_to_exam(icase, plan_in, exam_out,
                              exclude_segments=exclude_segments,
@@ -576,6 +577,15 @@ def beam_opt_settings_from_plan(plan, beamset, beam):
                 if beamsetting.ForBeam.Name == beam.Name:
                     return beamsetting
     return None
+
+
+def bs_equals(self, other):
+    if RS_VERSION.major >= 14:
+        # Need to move from UniqueId to BeamSetIdentifier() for
+        # comparison, this should always be valid.
+        return self.BeamSetIdentifier() == other.BeamSetIdentifier()
+    else:
+        return self.UniqueId == other.UniqueId
 
 
 def get_plan_for_bs_from_course(beamset_in, case_in):
@@ -1280,10 +1290,51 @@ def rename_beams(beamset, icase, dialog=True, do_rename=True):
             if beam['Name'] != beam['NewName']}
 
 
-def bs_equals(self, other):
-    if RS_VERSION.major >= 14:
-        # Need to move from UniqueId to BeamSetIdentifier() for
-        # comparison, this should always be valid.
-        return self.BeamSetIdentifier() == other.BeamSetIdentifier()
+def convert_to_robust(patient, icase, plan, robust_exam=None, dialog=True):
+    # Steps:
+    # Copy the exam for the passed plan (add " (Robust)") (copy everything)
+    # Call fn to make the rois on the new exam
+    # Make optimization objectives
+    # 	Refer to prescription dose
+    # Turn on the robustness in the optimizer
+    # 	Select the new exam as the thing to robust against
+    # Make evaluation dose:
+    #   "Compute on additional set" for robust CT
+
+    # Get exam from plan
+    structset_in = plan.GetTotalDoseStructureSet()
+    exam_in = structset_in.OnExamination
+
+    # Get PTV from plan, prompt if there is more than 1
+    try:
+        rx_rois = [rx.OnStructure for bs in plan.BeamSets
+                   for rx in bs.Prescription.PrescriptionDoseReferences
+                   if rx.OnStructure]
+        bs0_rx = plan.BeamSets[0].Prescription
+        rx_default = bs0_rx.PrimaryPrescriptionDoseReference.OnStructure
+    except AttributeError:
+        rx_rois = None
+        rx_default = None
+
+    robust_ptv = pick_roi(rx_rois,
+                          default=rx_default,
+                          include_types=['Ptv'])
+
+    if not robust_ptv:
+        _logger.warning("No robust PTV identified.")
+
+    # Make robust exam if it doesn't exist
+    if robust_exam:
+        robust_exam_name = obj_name(robust_exam)
+        robust_exam = icase.Examinations[robust_exam_name]
     else:
-        return self.UniqueId == other.UniqueId
+        robust_exam_name = f'{obj_name(exam_in)} (Robust)'
+        if f'{obj_name(exam_in)} (Robust)' in icase.Examinations.Keys:
+            robust_exam = icase.Examinations[robust_exam_name]
+        else:
+            robust_exam = duplicate_exam(patient, icase, exam_in,
+                                         excluded_roi_type=None,
+                                         exam_name_out=robust_exam_name)
+
+    # make rois
+    setup_robust_contours(exam_in, robust_exam, icase, obj_name(robust_ptv))
