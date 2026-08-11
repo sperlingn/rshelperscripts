@@ -1,5 +1,6 @@
 from .external import (dcmread, uid, CompositeAction, SuspendCompositeAction,
-                       obj_name, get_unique_name, RS_VERSION)
+                       obj_name, get_unique_name, RS_VERSION,
+                       InvalidOperationException, Show_OKCancel)
 
 from datetime import datetime
 
@@ -63,7 +64,24 @@ def duplicate_exam_11b(patient, icase, exam_in,
         export_params['Examinations'].append(exam_in.Name)
 
         _logger.debug(f"{export_params}")
-        icase.ScriptableDicomExport(**export_params)
+
+        try:
+            icase.ScriptableDicomExport(**export_params)
+        except InvalidOperationException as e:
+            if 'Changes must be saved before export.' in str(e):
+                res = Show_OKCancel(("Cannot duplicate exam with unsaved"
+                                     " changes, do you want to save?\n\n"
+                                     "WARNING: Undo will be lost!"),
+                                    caption="Save?",
+                                    icon='Warning',
+                                    defaultResult='Cancel')
+                if res:
+                    patient.Save()
+                    icase.ScriptableDicomExport(**export_params)
+                else:
+                    raise e
+            else:
+                raise e
 
         _logger.info(f"Saved exam to {tempdir}.")
 

@@ -5,9 +5,9 @@ from .external import (CompositeAction as CompositeAction, ObjectDict,
                        rs_getattr, rs_hasattr, sequential_dedup_return_list,
                        dup_object_param_values, CallLaterList, get_unique_name,
                        Show_OK, renumber_beams, RS_VERSION, get_current,
-                       pick_roi)
+                       pick_roi, pick_exam)
 from .examinations import duplicate_exam
-from .roi import ROI_Builder, setup_robust_contours
+from .roi import ROI_Builder, setup_robust_rois
 from .i18n import BEAMNAME_QUADRANT_TO_NAME, BEAMNAME_BREAST_SC_PA
 from difflib import get_close_matches
 # from .points import point as _point
@@ -1316,25 +1316,38 @@ def convert_to_robust(patient, icase, plan, robust_exam=None, dialog=True):
         rx_rois = None
         rx_default = None
 
-    robust_ptv = pick_roi(rx_rois,
-                          default=rx_default,
-                          include_types=['Ptv'])
+    ptv_name = obj_name(pick_roi(rx_rois,
+                                 default=rx_default,
+                                 include_types=['Ptv']))
 
-    if not robust_ptv:
+    if not ptv_name:
         _logger.warning("No robust PTV identified.")
 
     # Make robust exam if it doesn't exist
     if robust_exam:
         robust_exam_name = obj_name(robust_exam)
-        robust_exam = icase.Examinations[robust_exam_name]
-    else:
-        robust_exam_name = f'{obj_name(exam_in)} (Robust)'
-        if f'{obj_name(exam_in)} (Robust)' in icase.Examinations.Keys:
+        if robust_exam_name in icase.Examinations.Keys:
             robust_exam = icase.Examinations[robust_exam_name]
         else:
-            robust_exam = duplicate_exam(patient, icase, exam_in,
-                                         excluded_roi_type=None,
-                                         exam_name_out=robust_exam_name)
+            robust_exam = None
+    else:
+        if dialog:
+            robust_exam = pick_exam(message=('Select the robust exam '
+                                             '(or cancel to create one).'),
+                                    exclude=[exam_in],
+                                    include_none='Create new copy of exam')
+
+        robust_exam_name = f'{obj_name(exam_in)} (Robust)'
+
+    # Should be done with try: except:, but RS throws InvalidOperationException
+    # instead of the appropriate python KeyError, and in some CompositeAction
+    # states, this can cause RS to crash if it is not allowed to end the
+    # script.
+    if not robust_exam:
+        robust_exam = duplicate_exam(patient, icase, exam_in,
+                                     excluded_roi_types=None,
+                                     exam_name_out=robust_exam_name)
 
     # make rois
-    setup_robust_contours(exam_in, robust_exam, icase, obj_name(robust_ptv))
+    setup_robust_rois(original_exam=exam_in, robust_exam=robust_exam,
+                      icase=icase, ptv_name=ptv_name)

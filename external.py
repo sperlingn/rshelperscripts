@@ -103,29 +103,40 @@ class _CompositeActionDummy():
         _logger.info("Exited  {} Undo state.".format(self._name))
 
 
-class MB_Button(IntEnum):
+class DefIntEnum(IntEnum):
+    @classmethod
+    def _missing_(cls, value):
+        if value in cls.__members__:
+            return cls.__members__[value]
+        elif f'{value}_' in cls.__members__:
+            return cls.__members__[f'{value}_']
+        else:
+            return next(iter(cls))
+
+
+class MB_Button(DefIntEnum):
     OK = 0
     OKCancel = 1
     YesNo = 4
     YesNoCancel = 3
 
 
-class MB_Icon(IntEnum):
+class MB_Icon(DefIntEnum):
+    None_ = 0
     Asterisk = 64
     Error = 16
     Exclamation = 48
     Hand = 16
     Information = 64
-    None_ = 0
     Question = 32
     Stop = 16
     Warning_ = 48
 
 
-class MB_Result(IntEnum):
+class MB_Result(DefIntEnum):
+    None_ = 0
     Cancel = 2
     No = 7
-    None_ = 0
     OK = 1
     Yes = 6
 
@@ -143,9 +154,14 @@ class MB_Options(IntEnum):
     ServiceNotification = 2097152
 
 
-def _Show_MB(message, caption="Message", *args, ontop=False):
+def Show_MB(message, caption, button, icon, defaultResult, ontop=False):
     opt = MB_Options.DefaultDesktopOnly if ontop else MB_Options.None_
-    res = _MessageBox.Show(f"{message}", f"{caption}", *args, opt)
+
+    button = MB_Button(button)
+    icon = MB_Icon(icon)
+    defaultResult = MB_Result(defaultResult)
+    res = _MessageBox.Show(f"{message}", f"{caption}",
+                           button, icon, defaultResult, opt)
     try:
         return MB_Result(res)
     except ValueError:
@@ -157,7 +173,7 @@ def _Show_MB(message, caption="Message", *args, ontop=False):
 def Show_OK(message, caption="OK", ontop=False, icon=MB_Icon.None_,
             defaultResult=MB_Result.None_):
     button = MB_Button.OK
-    return _Show_MB(message, caption, button, icon, defaultResult, ontop=ontop)
+    return Show_MB(message, caption, button, icon, defaultResult, ontop=ontop)
 
 
 def Show_Warning(message, caption="Warning", ontop=True):
@@ -167,19 +183,19 @@ def Show_Warning(message, caption="Warning", ontop=True):
 def Show_OKCancel(message, caption="OK or Cancel?", ontop=False,
                   icon=MB_Icon.None_, defaultResult=MB_Result.None_):
     button = MB_Button.OKCancel
-    return _Show_MB(message, caption, button, icon, defaultResult, ontop=ontop)
+    return Show_MB(message, caption, button, icon, defaultResult, ontop=ontop)
 
 
 def Show_YesNo(message, caption="Yes or No?", ontop=False, icon=MB_Icon.None_,
                defaultResult=MB_Result.None_):
     button = MB_Button.YesNo
-    return _Show_MB(message, caption, button, icon, defaultResult, ontop=ontop)
+    return Show_MB(message, caption, button, icon, defaultResult, ontop=ontop)
 
 
 def Show_YesNoCancel(message, caption="Yes, No, or Cancel?", ontop=False,
                      icon=MB_Icon.None_, defaultResult=MB_Result.None_):
     button = MB_Button.YesNoCancel
-    return _Show_MB(message, caption, button, icon, defaultResult, ontop=ontop)
+    return Show_MB(message, caption, button, icon, defaultResult, ontop=ontop)
 
 
 def _await_user_input_mb(message):
@@ -1738,10 +1754,32 @@ def guess_name_id(obj_collection, first_guess=None):
     raise ValueError("Unable to guess unique name id.")
 
 
-def pick_list(obj_list, description="Select One", current=None, default=None):
+class PickedNone:
+    __slots__ = ('Name', )
+
+    def __init__(self, Name='None'):
+        self.Name = str(Name)
+
+    def __str__(self):
+        return f'{self.__class__.__name__}("{self.Name}")'
+
+    def __repr__(self):
+        return str(self)
+
+
+def pick_list(obj_list, description="Select One",
+              current=None, default=None,
+              include_none=False,
+              raise_on_cancel=True):
     results = {'current': current,
                'default': default,
                'description': description}
+
+    none_result = PickedNone(include_none)
+
+    if include_none:
+        obj_list = list(obj_list)
+        obj_list.append(none_result)
 
     # Don't bother with a dialog if there is only one, or no choice(s).
     if len(obj_list) == 1:
@@ -1754,19 +1792,21 @@ def pick_list(obj_list, description="Select One", current=None, default=None):
         res = dlg.ShowDialog()
 
         if not res:
-            raise Warning("Closed with cancel")
+            raise Warning("Selection dialog cancelled.")
 
-    except Warning:
+    except Warning as e:
         _logger.warning("Dialog failed to run correctly.", exc_info=True)
+        if raise_on_cancel:
+            raise e
 
-    if 'Selected' in results:
+    if 'Selected' in results and results['Selected'] != none_result:
         return results['Selected']
     else:
         return None
 
 
 def pick_exam(exams=None, include_current=True, default=None,
-              exclude=None, message="Select Exam:"):
+              exclude=None, message="Select Exam:", **kwargs):
     try:
         current = obj_name(get_current("Examination"))
     except InvalidDataException:
@@ -1781,11 +1821,12 @@ def pick_exam(exams=None, include_current=True, default=None,
                  get_current("Case").Examinations
                  if ((include_current or obj_name(exam) != current)
                      and not (exclude and obj_name(exam) in exclude))]
-    return pick_list(exams, message, current=current, default=default)
+    return pick_list(exams, message, current=current, default=default,
+                     **kwargs)
 
 
 def pick_plan(plans=None, include_current=True, default=None,
-              message="Select Plan:"):
+              message="Select Plan:", **kwargs):
     try:
         current = obj_name(get_current("Plan"))
     except InvalidDataException:
@@ -1796,11 +1837,13 @@ def pick_plan(plans=None, include_current=True, default=None,
                                  get_current("Case").TreatmentPlans
                                  if include_current
                                  or obj_name(plan) != obj_name(current)]
-    return pick_list(plans, message, current=current, default=default)
+    return pick_list(plans, message, current=current, default=default,
+                     **kwargs)
 
 
 def pick_beamset(beamsets=None, include_current=True, default=None,
-                 message="Select BeamSet:"):
+                 message="Select BeamSet:",
+                 **kwargs):
     try:
         current_bs = get_current("BeamSet")
         current = (f'{obj_name(get_current("Plan"))}: '
@@ -1818,12 +1861,14 @@ def pick_beamset(beamsets=None, include_current=True, default=None,
         if (include_current
             or current_bs.BeamSetIdentifier() != beamset.BeamSetIdentifier())}
     selected = pick_list(beamset_picks, message,
-                         current=current, default=default)
+                         current=current, default=default,
+                         **kwargs)
     return selected if (beamsets or not selected) else beamset_picks[selected]
 
 
 def pick_machine(current=None, default=None, match_on=None,
-                 exclude_current=False, message="Select machine:"):
+                 exclude_current=False, message="Select machine:",
+                 **kwargs):
     def_filter_dict = {'IsLinac': True,
                        'HasMlc': True,
                        'Name': None,
@@ -1868,11 +1913,13 @@ def pick_machine(current=None, default=None, match_on=None,
                 machines.remove(machine)
 
     return pick_list(machines, message,
-                     current=current, default=default)
+                     current=current, default=default,
+                     **kwargs)
 
 
 def pick_roi(rois=None, default=None, exclude_types=None, include_types=None,
-             message="Select an ROI"):
+             message="Select an ROI",
+             **kwargs):
     """
     Dialog to select an ROI from the list.
 
@@ -1890,7 +1937,7 @@ def pick_roi(rois=None, default=None, exclude_types=None, include_types=None,
             _logger.warning('exclude_types only possible when passed a list of'
                             f' rois, but passed {rois=}')
 
-    return pick_list(rois, message, default=default)
+    return pick_list(rois, message, default=default, **kwargs)
 
 
 @dataclass
