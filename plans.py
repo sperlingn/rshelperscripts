@@ -1539,29 +1539,38 @@ def convert_to_robust(patient, icase, plan, beamset, robust_type=None,
     if not robust_type:
         robust_type = guess_robust_type(icase.BodySite, dialog)
 
-    robust_exam = prepare_robust_exam(patient, icase, exam_in,
-                                      robust_exam=robust_exam, dialog=dialog)
+    with CompositeAction(f"Make {obj_name(beamset)} robust."):
+        robust_exam = prepare_robust_exam(patient, icase, exam_in,
+                                          robust_exam=robust_exam,
+                                          dialog=dialog)
 
-    if robust_type in ['Flash', 'Skin max']:
-        # make rois
-        robust_override_roi, robust_opti_roi = setup_robust_rois(
-            original_exam=exam_in, robust_exam=robust_exam,
-            icase=icase, ptv_name=ptv_name, other_ptv_names=other_ptv_names)
+        if robust_type in ['Flash', 'Skin max']:
+            # make rois
+            robust_override_roi, robust_opti_roi = setup_robust_rois(
+                original_exam=exam_in, robust_exam=robust_exam,
+                icase=icase, ptv_name=ptv_name,
+                other_ptv_names=other_ptv_names)
 
-    elif robust_type == 'Gas override':
-        raise NotImplementedError("Gas override not implemented yet.")
+        elif robust_type == 'Gas override':
+            raise NotImplementedError("Gas override not implemented yet.")
 
-    # make objectives
-    make_robust_opt(plan, beamset, robust_opti_roi, ptv_name,
-                    robust_exam, robust_type)
+        # make objectives
+        make_robust_opt(plan, beamset, robust_opti_roi, ptv_name,
+                        robust_exam, robust_type)
 
-    # Compute on additional sets
-    beamset.ComputeDoseOnAdditionalSets(
-        OnlyOneDosePerImageSet=False,
-        AllowGridExpansion=True,
-        ExaminationNames=[obj_name(robust_exam)],
-        FractionNumbers=[0],
-        ComputeBeamDoses=True)
+        # Compute on additional sets
+        beamset.ComputeDoseOnAdditionalSets(
+            OnlyOneDosePerImageSet=True,
+            AllowGridExpansion=True,
+            ExaminationNames=[obj_name(robust_exam)],
+            FractionNumbers=[0],
+            ComputeBeamDoses=True)
 
-    beamset.FractionDose.UpdateDoseGridStructuresAndRecomputeInvalidatedDoses()
-    beamset.FractionDose.UpdateDoseGridStructures()
+        for fx_eval in icase.TreatmentDelivery.FractionEvaluations:
+            for doe in fx_eval.DoseOnExaminations:
+                if obj_name(doe.OnExamination) in [obj_name(robust_exam),
+                                                   obj_name(exam_in)]:
+                    for doseeval in doe.DoseEvaluations:
+                        doseeval.UpdateDoseGridStructures()
+
+        beamset.FractionDose.UpdateDoseGridStructures()
