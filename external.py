@@ -18,6 +18,8 @@ _NAMELIST = ['Name', 'DicomPlanLabel', 'SegmentNumber']
 
 _INDIRECT_MACHINE_REF = {}
 
+_INDIRECT_MATERIAL_REF = {}
+
 
 def helperoverride(function):
     function.__overridden__ = True
@@ -2388,6 +2390,18 @@ def populate_machines(infilter=None, exclude_rsl=True):
     for machine in (m for m in machines_info_list
                     if (not exclude_rsl or 'RSL_' not in m['Name'])):
         get_machine(machine['Name'])
+
+
+def get_override_material(material_name):
+    _logging.debug(f"Getting material {material_name=}")
+
+    if material_name not in _INDIRECT_MATERIAL_REF:
+        patient_db = get_current('PatientDB')
+
+        _INDIRECT_MATERIAL_REF.update({m.Material.Name: m.Material for m in
+                                       patient_db.GetTemplateMaterials()})
+
+    return _INDIRECT_MATERIAL_REF[material_name]
 
 
 # __all__ = [dcmread, CompositeAction, get_current]

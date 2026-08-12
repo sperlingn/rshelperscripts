@@ -5,7 +5,7 @@ from .external import (CompositeAction as CompositeAction, ObjectDict,
                        rs_getattr, rs_hasattr, sequential_dedup_return_list,
                        dup_object_param_values, CallLaterList, get_unique_name,
                        Show_OK, renumber_beams, RS_VERSION, get_current,
-                       pick_roi, pick_exam)
+                       pick_roi, pick_exam, pick_list)
 from .examinations import duplicate_exam
 from .roi import ROI_Builder, setup_robust_rois
 from .i18n import BEAMNAME_QUADRANT_TO_NAME, BEAMNAME_BREAST_SC_PA
@@ -1290,39 +1290,33 @@ def rename_beams(beamset, icase, dialog=True, do_rename=True):
             if beam['Name'] != beam['NewName']}
 
 
-def convert_to_robust(patient, icase, plan, robust_exam=None, dialog=True):
-    # Steps:
-    # Copy the exam for the passed plan (add " (Robust)") (copy everything)
-    # Call fn to make the rois on the new exam
-    # Make optimization objectives
-    # 	Refer to prescription dose
-    # Turn on the robustness in the optimizer
-    # 	Select the new exam as the thing to robust against
-    # Make evaluation dose:
-    #   "Compute on additional set" for robust CT
+def prepare_robust_exam(patient, icase, exam_in,
+                        robust_exam=None, dialog=True):
+    """ Find/create and return the exam to be used for robust optmization
 
-    # Get exam from plan
-    structset_in = plan.GetTotalDoseStructureSet()
-    exam_in = structset_in.OnExamination
+    Parameters
+    ----------
+    patient : Patient
+        Patient from get_current('Patient')
+    icase : Case
+        Case in patient (can be from get_current('Case')
+    exam_in : Examination
+        Exam to be used as the basis for the new robust_exam if it is created.
+    robust_exam : Examination, optional
+        Either a name or an exam to use for the robust exam, no checking is
+        done to make sure that this is valid.  If `obj_name(robust_exam)` does
+        not exist in `icase.Examinations`, a new exam will be created with the
+        name set by `obj_name(robust_exam)` (either `robust_exam.Name` or the
+        result of `str(robust_exam)`)
+    dialog : bool, default: True
+        Display a dialog to select when there are multiple options, otherwise
+        try to do the most logical thing. e.g.:
+            `robust_exam` : if not passed, build one using
+                            `f'{exam_in} (Robust)'` as the name
 
-    # Get PTV from plan, prompt if there is more than 1
-    try:
-        rx_rois = [rx.OnStructure for bs in plan.BeamSets
-                   for rx in bs.Prescription.PrescriptionDoseReferences
-                   if rx.OnStructure]
-        bs0_rx = plan.BeamSets[0].Prescription
-        rx_default = bs0_rx.PrimaryPrescriptionDoseReference.OnStructure
-    except AttributeError:
-        rx_rois = None
-        rx_default = None
 
-    ptv_name = obj_name(pick_roi(rx_rois,
-                                 default=rx_default,
-                                 include_types=['Ptv']))
 
-    if not ptv_name:
-        _logger.warning("No robust PTV identified.")
-
+    """
     # Make robust exam if it doesn't exist
     if robust_exam:
         robust_exam_name = obj_name(robust_exam)
@@ -1348,6 +1342,226 @@ def convert_to_robust(patient, icase, plan, robust_exam=None, dialog=True):
                                      excluded_roi_types=None,
                                      exam_name_out=robust_exam_name)
 
-    # make rois
-    setup_robust_rois(original_exam=exam_in, robust_exam=robust_exam,
-                      icase=icase, ptv_name=ptv_name)
+    return robust_exam
+
+
+def guess_robust_type(site, dialog):
+    """ Guess the type of robustness from the treatment site.
+    """
+    type_guess = None
+    lsite = str(site).lower()
+    # Try to guess first
+    if 'breast' in lsite:
+        type_guess = 'Flash'
+    elif 'neck' in lsite:
+        type_guess = 'Flash'
+    elif 'prostate' in lsite:
+        type_guess = 'Gas override'
+
+    if dialog or type_guess is None:
+        robust_type = pick_list(['Flash', 'Skin max', 'Gas override'],
+                                description='Select robustness type',
+                                default=type_guess)
+    else:
+        robust_type = type_guess
+
+    if not robust_type:
+        raise Warning("Must you must select a robustness type.")
+
+    return robust_type
+
+
+def make_robust_opt(plan, beamset, robust_opti_roi, ptv_name,
+                    robust_exam, robust_type):
+    for opt in plan.PlanOptimizations:
+        # Find the dose for the PTV
+        dose = None
+        for pdr in beamset.Prescription.PrescriptionDoseReferences:
+            try:
+                if pdr.OnStructure.Name == ptv_name:
+                    dose = pdr.DoseValue
+            except AttributeError:
+                continue
+
+        if not dose:
+            raise Warning(f'Cannot find dose for PTV "{ptv_name}", cannot add'
+                          ' dose objectives')
+
+        new_opti_kwargs = {
+            "RoiName": obj_name(robust_opti_roi),
+            "IsConstraint": False,
+            "RestrictAllBeamsIndividually": False,
+            "RestrictToBeam": None,
+            "IsRobust": True,
+            "RestrictToBeamSet": None,
+            "UseRbeDose": False
+        }
+
+        # Only use MinDose for Flash type
+        if robust_type == 'Flash':
+            min_dose_fn = opt.AddOptimizationFunction(FunctionType="MinDose",
+                                                      **new_opti_kwargs)
+            min_dose_fn.DoseFunctionParameters.DoseLevel = dose
+
+        if robust_type in ['Flash', 'Skin max']:
+            max_dose_fn = opt.AddOptimizationFunction(FunctionType="MaxDose",
+                                                      **new_opti_kwargs)
+
+            max_dose_fn.DoseFunctionParameters.DoseLevel = dose * 1.05
+
+        elif robust_type == 'Gas override':
+            for fn in opt.Objective.ConstituentFunctions:
+                if fn.ForRegionOfInterest.Name == ptv_name:
+                    fn.UseRobustness = True
+
+        # Enable robustness for this optmization on the robust_exam
+        robust_params = {
+            "PositionUncertaintyAnterior": 0,
+            "PositionUncertaintyPosterior": 0,
+            "PositionUncertaintySuperior": 0,
+            "PositionUncertaintyInferior": 0,
+            "PositionUncertaintyLeft": 0,
+            "PositionUncertaintyRight": 0,
+            "DensityUncertainty": 0,
+            "PositionUncertaintySetting": "Universal",
+            "IndependentLeftRight": True,
+            "IndependentAnteriorPosterior": True,
+            "IndependentSuperiorInferior": True,
+            "ComputeExactScenarioDoses": False,
+            "NamesOfNonPlanningExaminations": [obj_name(robust_exam)],
+            "PatientGeometryUncertaintyType": "PerTreatmentCourse",
+            "PositionUncertaintyType": "PerTreatmentCourse",
+            "TreatmentCourseScenariosFactor": 1000
+        }
+        opt.OptimizationParameters.SaveRobustnessParameters(**robust_params)
+
+
+def convert_to_robust(patient, icase, plan, beamset, robust_type=None,
+                      margin=1.5, gas_roi=None,
+                      robust_exam=None, dialog=True):
+    """ Set up `plan` in case `icase` for patient `patient` to be optimized
+    robustly using a copy of the primary exam.  If possible, this will
+    determine appropriate contours and type of robustness.  If `dialog` is True
+    it will prompt the user when the decision is not clear, otherwise it will
+    use the defaults.
+
+    For 'Flash' type, an roi will be made that expands the PTV by
+        `margin` (default 1.5cm) (can be non-uniform), and expands the external
+        by an additional 0.5cm (set in roi.py).  The space between the original
+        external and the new external will be overriden to
+        `material` (default 'Cork').  All of this will be done on the
+        `robust_exam` and will not change the plan on the original exam.
+        Finally, the optimization objectives for min and max doses on the
+        "robust opti" contour will be created and the new image set will be set
+        to be robust.
+    For 'Skin Max' type, everything is the same as 'Flash' except a min dose
+        objective will not be created (max dose only).
+    For 'Gas override' type, a "Robust Override" ROI will be created only on
+        the `robust_exam` and the geometry will be copied from `gas_roi`.
+        "Robust Override" roi will have the density set to "Water" and all PTV
+        objectives will be enabled for robustness.
+
+    Parameters
+    ----------
+    patient : Patient
+        Patient from get_current('Patient')
+    icase : Case
+        Case in patient (can be from get_current('Case')
+    plan : TreatmentPlan
+        Treatment plan in case to use, uses the Total Dose Examination as the
+        source for the exam
+    robust_type : {'Flash', 'Skin max', 'Gas override'}, optional
+        The type of robustness that will be used.
+    gas_roi : ROI or str, optional
+        If performing gas override robustness, use `gas_roi` as the gas volume
+        that will be the basis for the "Robust Override" roi.
+        Note: this will also set the robust_type to 'Gas override'
+    robust_exam : Examination, optional
+        Either a name or an exam to use for the robust exam, no checking is
+        done to make sure that this is valid.  If `obj_name(robust_exam)` does
+        not exist in `icase.Examinations`, a new exam will be created with the
+        name set by `obj_name(robust_exam)` (either `robust_exam.Name` or the
+        result of `str(robust_exam)`)
+    dialog : bool, default: True
+        Display a dialog to select when there are multiple options, otherwise
+        try to do the most logical thing. e.g.:
+            `robust_type` : Try to determine from plan type
+            `ptv_name` : Roi name for the first beamset's primary Rx
+            `robust_exam` : if not passed, build one using
+                            `f'{exam_in} (Robust)'` as the name
+
+
+    Internal Process
+    ----------
+    Make a copy of the CT - use duplicate exam function
+    on the copy of the CT:
+        make override contour: (PTV+Flash Margin+0.5cm) - Original External
+            Set override to cork on override contour (Cork?)
+        Make flash optimization contour: (PTV+Flash margin) - Original External
+        Make new external ONLY ON COPY CT: Original External + Override Contour
+    *Make Opti contour on Original CT that is inside the PTV*
+    Make optimization objectives
+        Refer to prescription dose
+    Turn on the robustness in the optimizer
+        Select the new CT as the thing to robust against
+    Make evaluation dose
+        "Compute on additional set" for robust CT
+
+
+    """
+    # Get exam from plan
+    structset_in = plan.GetTotalDoseStructureSet()
+    exam_in = structset_in.OnExamination
+
+    # Get PTV from plan, prompt if there is more than 1
+    try:
+        rx_rois = [rx.OnStructure
+                   for rx in beamset.Prescription.PrescriptionDoseReferences
+                   if rx.OnStructure]
+        bs0_rx = beamset.Prescription
+        rx_default = bs0_rx.PrimaryPrescriptionDoseReference.OnStructure
+    except AttributeError:
+        rx_rois = None
+        rx_default = None
+
+    if dialog:
+        ptv_name = obj_name(pick_roi(rx_rois,
+                                     default=rx_default,
+                                     include_types=['Ptv']))
+    else:
+        ptv_name = rx_default
+
+    if not ptv_name:
+        raise Warning("No robust PTV identified.")
+
+    other_ptv_names = [*{obj_name(roi) for roi in rx_rois} - {ptv_name}]
+
+    if not robust_type:
+        robust_type = guess_robust_type(icase.BodySite, dialog)
+
+    robust_exam = prepare_robust_exam(patient, icase, exam_in,
+                                      robust_exam=robust_exam, dialog=dialog)
+
+    if robust_type in ['Flash', 'Skin max']:
+        # make rois
+        robust_override_roi, robust_opti_roi = setup_robust_rois(
+            original_exam=exam_in, robust_exam=robust_exam,
+            icase=icase, ptv_name=ptv_name, other_ptv_names=other_ptv_names)
+
+    elif robust_type == 'Gas override':
+        raise NotImplementedError("Gas override not implemented yet.")
+
+    # make objectives
+    make_robust_opt(plan, beamset, robust_opti_roi, ptv_name,
+                    robust_exam, robust_type)
+
+    # Compute on additional sets
+    beamset.ComputeDoseOnAdditionalSets(
+        OnlyOneDosePerImageSet=False,
+        AllowGridExpansion=True,
+        ExaminationNames=[obj_name(robust_exam)],
+        FractionNumbers=[0],
+        ComputeBeamDoses=True)
+
+    beamset.FractionDose.UpdateDoseGridStructuresAndRecomputeInvalidatedDoses()
+    beamset.FractionDose.UpdateDoseGridStructures()

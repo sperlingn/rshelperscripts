@@ -1,5 +1,6 @@
 from .external import (get_current, LimitedDict, obj_name, RS_VERSION,
-                       IndirectInheritanceClass, CompositeAction)
+                       IndirectInheritanceClass, CompositeAction,
+                       get_override_material)
 from .points import point
 import logging
 from inspect import signature
@@ -300,6 +301,7 @@ class ROI(IndirectInheritanceClass):
 
 
 def setup_robust_rois(original_exam, robust_exam, icase, ptv_name,
+                      other_ptv_names=None,
                       flash_margin=_DEFAULT_FLASH_MARGIN,
                       override_material=_DEFAULT_MATERIAL_NAME):
 
@@ -315,6 +317,8 @@ def setup_robust_rois(original_exam, robust_exam, icase, ptv_name,
     external_roi = ROI(structset.OutlineRoiGeometry.OfRoi,
                        context=structset)
     external_name = obj_name(external_roi)
+
+    override_material = get_override_material(override_material)
 
     with CompositeAction("Prepare Robust Opti Contours"):
         builder = ROI_Builder(patient_model=pm,
@@ -332,8 +336,10 @@ def setup_robust_rois(original_exam, robust_exam, icase, ptv_name,
                                          operation='Subtraction',
                                          rois_a_margin=override_margin)
 
-        # TODO: Set density of override ROI
-        # robust_override_roi.SetRoiMaterial(Material=override_material)
+        # Set density of override ROI
+        # Have to set material here instead of when creating the ROI because
+        # RS crashes when you pass RoiMaterial to CreateROI.
+        robust_override_roi.SetRoiMaterial(Material=override_material)
 
         # Make Optimization contour
         robust_opti_roi = builder.CreateROI(Name=ROPTI_ROI_NAME)
@@ -355,10 +361,23 @@ def setup_robust_rois(original_exam, robust_exam, icase, ptv_name,
 
         robust_opti_roi.ab_operation(**roab_opts)
 
-        # Make new external
+        # Remove rois with a different prescribed dose level
+        if other_ptv_names:
+            roab_opts = {'exam': original_exam,
+                         'rois_a': [obj_name(robust_opti_roi)],
+                         'rois_b': other_ptv_names,
+                         'operation': 'Subtraction',
+                         'rois_b_margin': 0.5,
+                         'rois_b_margin_opts': {'direction': 'Expand'}}
 
+            robust_opti_roi.ab_operation(**roab_opts)
+
+        # Make new external on the robust exam only
         external_roi.ab_operation(exam=robust_exam,
                                   rois_a=[external_name,
                                           RO_ROI_NAME],
                                   rois_b=[],
                                   operation='None')
+
+    return (robust_override_roi,
+            robust_opti_roi)
