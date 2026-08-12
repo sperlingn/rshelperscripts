@@ -62,8 +62,8 @@ class ROI_Builder():
         self.default_opts.update(default_opts)
         self.default_opts.update(kwargs)
 
-    def CreateROI(self, name=None, only_on_ss=None,
-                  opts=None, **opts_ovr):
+    def CreateROI(self, name=None, opts=None, only_on_ss=None,
+                  **opts_ovr):
         create_opts = LimitedDict(self.default_opts)
 
         name = opts_ovr.pop('Name', name if name else create_opts['Name'])
