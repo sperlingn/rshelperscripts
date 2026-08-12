@@ -613,8 +613,7 @@ def check_collision_dialog(plan, beam_set, full_arc_check=False):
     try:
         with CompositeAction("Collision Check") as CA:
             res = dlg.ShowDialog()
-
-            if res:
+            if not res:
                 if CA.is_root:
                     # We can undo by popping out of the CompositeAction with a
                     # warning that we catch.

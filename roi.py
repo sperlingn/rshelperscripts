@@ -247,6 +247,9 @@ class ROI(IndirectInheritanceClass):
         self._roi.CreateAlgebraGeometry(**create_geom_opts)
 
     def check_overlap(self, rois_a, rois_b):
+        # Note: There is a ComparisonOfRoiGeometries member function in the
+        #  StructureSet, however that is significantly slower than this
+        #  operation.
         for exam in self._geometries:
             self.ab_intersect(exam, rois_a, rois_b)
         return all([g.HasContours() for g in self.geoms])
