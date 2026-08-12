@@ -22,6 +22,17 @@ def margin_settings(margin=0, direction='Expand',
                     Superior=None, Inferior=None,
                     Anterior=None, Posterior=None,
                     Right=None, Left=None):
+
+    if isinstance(margin, dict):
+        zm = margin_settings(**{k: v for k, v in margin.items()
+                                if k in signature(margin_settings).parameters})
+        zm['Type'] = direction
+
+        zm.update({k: v for k, v in locals().items()
+                   if k in zm and v is not None})
+
+        return zm
+
     return {'Type': direction,
             'Superior': margin if Superior is None else Superior,
             'Inferior': margin if Inferior is None else Inferior,
@@ -36,6 +47,7 @@ class ROI_Builder():
     default_opts = None
     pm = None
     strucsets = None
+    _RoiMaterial = None
 
     def __init__(self, patient_model=None, structure_set=None, beam_set=None,
                  default_opts=None, **kwargs):
@@ -58,6 +70,12 @@ class ROI_Builder():
         else:
             self.structsets = [s for s in self.pm.StructureSets]
 
+        # Don't let RoiMaterial get passed as it crashes CreateROI in RS
+        self._RoiMaterial = kwargs.pop('RoiMaterial', None)
+
+        if isinstance(self._RoiMaterial, str):
+            self._RoiMaterial = get_override_material(self._RoiMaterial)
+
         self.default_opts = LimitedDict(_ROI_OPTS)
         self.default_opts.update(default_opts)
         self.default_opts.update(kwargs)
@@ -66,7 +84,11 @@ class ROI_Builder():
                   **opts_ovr):
         create_opts = LimitedDict(self.default_opts)
 
+        # Allow Name to be set using standard RS parameters, and ours.
         name = opts_ovr.pop('Name', name if name else create_opts['Name'])
+
+        # Don't let RoiMaterial get passed as it crashes CreateROI in RS
+        material = opts_ovr.pop('RoiMaterial', self._RoiMaterial)
 
         create_opts.update(opts)
         create_opts.update(opts_ovr)
@@ -74,6 +96,12 @@ class ROI_Builder():
         create_opts['Name'] = self.pm.GetUniqueRoiName(DesiredName=name)
 
         roi = self.pm.CreateRoi(**create_opts)
+
+        # Now safe to set material
+        if material:
+            _logger.debug(f'{material=}')
+            roi.SetRoiMaterial(Material=get_override_material(material))
+
         geometries = {ss.OnExamination: ss.RoiGeometries[roi.Name]
                       for ss in self.structsets
                       if (not only_on_ss
@@ -303,10 +331,26 @@ class ROI(IndirectInheritanceClass):
         self.Show('Off', 'Off', False)
 
 
+def flash_margin_from_site(site, margin=0):
+    if 'Breast' in site:
+        margin_out = {'margin': 0}
+        margin_out['Anterior'] = margin
+
+        for lr in ['Left', 'Right']:
+            if lr in site:
+                margin_out[lr] = margin
+
+        return margin_out
+
+    return margin
+
+
 def setup_robust_rois(original_exam, robust_exam, icase, ptv_name,
                       other_ptv_names=None,
                       flash_margin=_DEFAULT_FLASH_MARGIN,
                       override_material=_DEFAULT_MATERIAL_NAME):
+    # TODO: For lateralized disease, only expand in sensible directions.
+    # e.g. for L Breast expand Anterior and Left
 
     # Function defaulted parameter or static values?
     FLASH_TO_OVERRIDE_MARGIN = 0.5
@@ -314,14 +358,17 @@ def setup_robust_rois(original_exam, robust_exam, icase, ptv_name,
     ROPTI_ROI_NAME = "Robust Opti"
 
     # Calculated variables from inputs
-    override_margin = flash_margin + FLASH_TO_OVERRIDE_MARGIN
+    ovr_margin = flash_margin + FLASH_TO_OVERRIDE_MARGIN
+
+    # Make margins non-uniform for select sites
+    override_margin = flash_margin_from_site(icase.BodySite, ovr_margin)
+    flash_margin = flash_margin_from_site(icase.BodySite, flash_margin)
+
     pm = icase.PatientModel
     structset = pm.StructureSets[obj_name(original_exam.Name)]
     external_roi = ROI(structset.OutlineRoiGeometry.OfRoi,
                        context=structset)
     external_name = obj_name(external_roi)
-
-    override_material = get_override_material(override_material)
 
     with CompositeAction("Prepare Robust Opti Contours"):
         builder = ROI_Builder(patient_model=pm,
@@ -332,17 +379,13 @@ def setup_robust_rois(original_exam, robust_exam, icase, ptv_name,
                               RoiMaterial=None)
 
         # Make robust override contour
-        robust_override_roi = builder.CreateROI(name=RO_ROI_NAME)
+        robust_override_roi = builder.CreateROI(name=RO_ROI_NAME,
+                                                RoiMaterial=override_material)
         robust_override_roi.ab_operation(exam=robust_exam,
                                          rois_a=[ptv_name],
                                          rois_b=[external_name],
                                          operation='Subtraction',
                                          rois_a_margin=override_margin)
-
-        # Set density of override ROI
-        # Have to set material here instead of when creating the ROI because
-        # RS crashes when you pass RoiMaterial to CreateROI.
-        robust_override_roi.SetRoiMaterial(Material=override_material)
 
         # Make Optimization contour
         robust_opti_roi = builder.CreateROI(Name=ROPTI_ROI_NAME)

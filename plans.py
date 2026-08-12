@@ -1325,13 +1325,14 @@ def prepare_robust_exam(patient, icase, exam_in,
         else:
             robust_exam = None
     else:
+        robust_exam_name = f'{obj_name(exam_in)} (Robust)'
+
         if dialog:
             robust_exam = pick_exam(message=('Select the robust exam '
                                              '(or cancel to create one).'),
                                     exclude=[exam_in],
+                                    default=robust_exam_name,
                                     include_none='Create new copy of exam')
-
-        robust_exam_name = f'{obj_name(exam_in)} (Robust)'
 
     # Should be done with try: except:, but RS throws InvalidOperationException
     # instead of the appropriate python KeyError, and in some CompositeAction
@@ -1387,23 +1388,23 @@ def make_robust_opt(plan, beamset, robust_opti_roi, ptv_name,
             raise Warning(f'Cannot find dose for PTV "{ptv_name}", cannot add'
                           ' dose objectives')
 
-        new_opti_kwargs = {
-            "RoiName": obj_name(robust_opti_roi),
-            "IsConstraint": False,
-            "RestrictAllBeamsIndividually": False,
-            "RestrictToBeam": None,
-            "IsRobust": True,
-            "RestrictToBeamSet": None,
-            "UseRbeDose": False
-        }
-
         # Only use MinDose for Flash type
-        if robust_type == 'Flash':
-            min_dose_fn = opt.AddOptimizationFunction(FunctionType="MinDose",
-                                                      **new_opti_kwargs)
-            min_dose_fn.DoseFunctionParameters.DoseLevel = dose
-
         if robust_type in ['Flash', 'Skin max']:
+            new_opti_kwargs = {
+                "RoiName": obj_name(robust_opti_roi),
+                "IsConstraint": False,
+                "RestrictAllBeamsIndividually": False,
+                "RestrictToBeam": None,
+                "IsRobust": True,
+                "RestrictToBeamSet": None,
+                "UseRbeDose": False
+            }
+
+            if robust_type == 'Flash':
+                min_dose_fn = opt.AddOptimizationFunction(
+                    FunctionType="MinDose", **new_opti_kwargs)
+                min_dose_fn.DoseFunctionParameters.DoseLevel = dose
+
             max_dose_fn = opt.AddOptimizationFunction(FunctionType="MaxDose",
                                                       **new_opti_kwargs)
 
@@ -1539,6 +1540,8 @@ def convert_to_robust(patient, icase, plan, beamset, robust_type=None,
     if not robust_type:
         robust_type = guess_robust_type(icase.BodySite, dialog)
 
+    robust_opti_roi = None
+
     with CompositeAction(f"Make {obj_name(beamset)} robust."):
         robust_exam = prepare_robust_exam(patient, icase, exam_in,
                                           robust_exam=robust_exam,
@@ -1552,7 +1555,19 @@ def convert_to_robust(patient, icase, plan, beamset, robust_type=None,
                 other_ptv_names=other_ptv_names)
 
         elif robust_type == 'Gas override':
-            raise NotImplementedError("Gas override not implemented yet.")
+            gas_roi = gas_roi or pick_roi(message='Pick ROI for gas override:')
+            pm = icase.PatientModel
+            builder = ROI_Builder(patient_model=pm,
+                                  Color="Blue",
+                                  Type="Undefined",
+                                  TissueName=None,
+                                  RbeCellTypeName=None,
+                                  RoiMaterial='Water')
+            robust_override_roi = builder.CreateROI(name='Robust Override')
+            robust_override_roi.ab_operation(exam=robust_exam,
+                                             rois_a=[obj_name(gas_roi)],
+                                             rois_b=[],
+                                             operation='None')
 
         # make objectives
         make_robust_opt(plan, beamset, robust_opti_roi, ptv_name,
