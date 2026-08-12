@@ -682,8 +682,9 @@ class ListSelectorDialog(RayWindow):
 
     <StackPanel Background="#FFE6E6E6" MinHeight="20" Margin="0">
         <Label x:Name="PickerLabel" Content="Select one:"/>
-        <StackPanel x:Name="ListPanel">
-        </StackPanel>
+        <ScrollViewer MaxHeight="800" VerticalScrollBarVisibility="Auto">
+            <StackPanel x:Name="ListPanel"/>
+        </ScrollViewer>
     </StackPanel>
 </Window>
     """
@@ -2392,16 +2393,18 @@ def populate_machines(infilter=None, exclude_rsl=True):
         get_machine(machine['Name'])
 
 
-def get_override_material(material_name):
-    _logging.debug(f"Getting material {material_name=}")
+def get_override_material(material):
+    _logging.debug(f"Getting material {material=}")
 
-    if material_name not in _INDIRECT_MATERIAL_REF:
+    material = obj_name(material)
+
+    if material not in _INDIRECT_MATERIAL_REF:
         patient_db = get_current('PatientDB')
 
         _INDIRECT_MATERIAL_REF.update({m.Material.Name: m.Material for m in
                                        patient_db.GetTemplateMaterials()})
 
-    return _INDIRECT_MATERIAL_REF[material_name]
+    return _INDIRECT_MATERIAL_REF[material]
 
 
 # __all__ = [dcmread, CompositeAction, get_current]
