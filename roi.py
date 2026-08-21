@@ -27,6 +27,7 @@ def margin_settings(margin=0, direction='Expand',
         zm = margin_settings(**{k: v for k, v in margin.items()
                                 if k in signature(margin_settings).parameters})
         zm['Type'] = direction
+        zm.pop('margin', None)  # Pop 'margin' in case it was set
 
         zm.update({k: v for k, v in locals().items()
                    if k in zm and v is not None})
@@ -365,9 +366,10 @@ def setup_robust_rois(original_exam, robust_exam, icase, ptv_name,
     flash_margin = flash_margin_from_site(icase.BodySite, flash_margin)
 
     pm = icase.PatientModel
-    structset = pm.StructureSets[obj_name(original_exam.Name)]
-    external_roi = ROI(structset.OutlineRoiGeometry.OfRoi,
-                       context=structset)
+    orig_structset = pm.StructureSets[obj_name(original_exam)]
+    robust_structset = pm.StructureSets[obj_name(robust_exam)]
+    external_roi = ROI(orig_structset.OutlineRoiGeometry.OfRoi,
+                       context=orig_structset)
     external_name = obj_name(external_roi)
 
     with CompositeAction("Prepare Robust Opti Contours"):
@@ -421,9 +423,31 @@ def setup_robust_rois(original_exam, robust_exam, icase, ptv_name,
         # Make new external on the robust exam only
         external_roi.ab_operation(exam=robust_exam,
                                   rois_a=[external_name,
-                                          RO_ROI_NAME],
+                                          obj_name(robust_opti_roi)],
                                   rois_b=[],
                                   operation='None')
+
+        # Clean the robust external of holes (can randomly occur)
+        robust_structset.SimplifyContours(
+            RoiNames=[external_name],
+            RemoveHoles3D=True,
+            RemoveSmallContours=False,
+            AreaThreshold=None,
+            ReduceMaxNumberOfPointsInContours=False,
+            MaxNumberOfPoints=None,
+            CreateCopyOfRoi=False,
+            ResolveOverlappingContours=False
+        )
+
+        # Recheck the override and opti contours against the new cleaned
+        # external
+        robust_override_roi.ab_intersect(
+            exam=robust_exam,
+            rois_a=[obj_name(robust_override_roi)],
+            rois_b=[external_name])
+        robust_opti_roi.ab_intersect(exam=robust_exam,
+                                     rois_a=[obj_name(robust_opti_roi)],
+                                     rois_b=[external_name])
 
     return (robust_override_roi,
             robust_opti_roi)
