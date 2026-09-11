@@ -1,7 +1,9 @@
 from .external import (get_current, LimitedDict, obj_name, RS_VERSION,
-                       IndirectInheritanceClass)
+                       IndirectInheritanceClass, CompositeAction,
+                       get_override_material)
 from .points import point
 import logging
+from inspect import signature
 _logger = logging.getLogger(__name__)
 
 
@@ -12,12 +14,33 @@ _ROI_OPTS = {'Name': 'Generated',
              'RbeCellTypeName': None,
              'RoiMaterial': None}
 
+_DEFAULT_FLASH_MARGIN = 1.5
+_DEFAULT_MATERIAL_NAME = "Cork"
 
-def margin_settings(margin, direction='Expand'):
+
+def margin_settings(margin=0, direction='Expand',
+                    Superior=None, Inferior=None,
+                    Anterior=None, Posterior=None,
+                    Right=None, Left=None):
+
+    if isinstance(margin, dict):
+        zm = margin_settings(**{k: v for k, v in margin.items()
+                                if k in signature(margin_settings).parameters})
+        zm['Type'] = direction
+        zm.pop('margin', None)  # Pop 'margin' in case it was set
+
+        zm.update({k: v for k, v in locals().items()
+                   if k in zm and v is not None})
+
+        return zm
+
     return {'Type': direction,
-            'Superior': margin, 'Inferior': margin,
-            'Anterior': margin, 'Posterior': margin,
-            'Right': margin, 'Left': margin}
+            'Superior': margin if Superior is None else Superior,
+            'Inferior': margin if Inferior is None else Inferior,
+            'Anterior': margin if Anterior is None else Anterior,
+            'Posterior': margin if Posterior is None else Posterior,
+            'Right': margin if Right is None else Right,
+            'Left': margin if Left is None else Left}
 
 
 class ROI_Builder():
@@ -25,6 +48,7 @@ class ROI_Builder():
     default_opts = None
     pm = None
     strucsets = None
+    _RoiMaterial = None
 
     def __init__(self, patient_model=None, structure_set=None, beam_set=None,
                  default_opts=None, **kwargs):
@@ -47,14 +71,25 @@ class ROI_Builder():
         else:
             self.structsets = [s for s in self.pm.StructureSets]
 
+        # Don't let RoiMaterial get passed as it crashes CreateROI in RS
+        self._RoiMaterial = kwargs.pop('RoiMaterial', None)
+
+        if isinstance(self._RoiMaterial, str):
+            self._RoiMaterial = get_override_material(self._RoiMaterial)
+
         self.default_opts = LimitedDict(_ROI_OPTS)
         self.default_opts.update(default_opts)
         self.default_opts.update(kwargs)
 
-    def CreateROI(self, name=None, opts=None, **opts_ovr):
+    def CreateROI(self, name=None, opts=None, only_on_ss=None,
+                  **opts_ovr):
         create_opts = LimitedDict(self.default_opts)
 
+        # Allow Name to be set using standard RS parameters, and ours.
         name = opts_ovr.pop('Name', name if name else create_opts['Name'])
+
+        # Don't let RoiMaterial get passed as it crashes CreateROI in RS
+        material = opts_ovr.pop('RoiMaterial', self._RoiMaterial)
 
         create_opts.update(opts)
         create_opts.update(opts_ovr)
@@ -62,8 +97,17 @@ class ROI_Builder():
         create_opts['Name'] = self.pm.GetUniqueRoiName(DesiredName=name)
 
         roi = self.pm.CreateRoi(**create_opts)
+
+        # Now safe to set material
+        if material:
+            _logger.debug(f'{material=}')
+            roi.SetRoiMaterial(Material=get_override_material(material))
+
         geometries = {ss.OnExamination: ss.RoiGeometries[roi.Name]
-                      for ss in self.structsets}
+                      for ss in self.structsets
+                      if (not only_on_ss
+                          or obj_name(ss) == obj_name(only_on_ss)
+                          or obj_name(ss) in map(obj_name, only_on_ss))}
 
         return ROI(roi, geometries)
 
@@ -178,13 +222,27 @@ class ROI(IndirectInheritanceClass):
         self.ab_operation(exam, rois_a, rois_b, operation='Intersection')
 
     def ab_operation(self, exam, rois_a, rois_b, operation,
-                     rois_a_margin=0, rois_b_margin=0, margin=0):
+                     rois_a_margin=0, rois_b_margin=0, margin=0,
+                     rois_a_op='Union', rois_b_op='Union',
+                     rois_a_margin_opts={}, rois_b_margin_opts={},
+                     final_margin_opts={}):
         VALID_OPS = ['None',
                      'Union',
                      'Intersection',
                      'Subtraction']
+
         if operation and operation not in VALID_OPS:
             operation = None
+        if rois_a_op and rois_a_op not in VALID_OPS:
+            rois_a_op = None
+        if rois_b_op and rois_b_op not in VALID_OPS:
+            rois_b_op = None
+
+        rois_a_margin_opts = {k: v for k, v in rois_a_margin_opts.items()
+                              if k in signature(margin_settings).parameters}
+        rois_b_margin_opts = {k: v for k, v in rois_b_margin_opts.items()
+                              if k in signature(margin_settings).parameters}
+
         if not exam and len(self._geometries) == 1:
             exam = [k for k in self._geometries.keys()][0]
         if not isinstance(rois_a, list):
@@ -193,27 +251,34 @@ class ROI(IndirectInheritanceClass):
             rois_b = [rois_b]
 
         # Convert any passed ROI or RS ROI into a Name
-        rois_a = [roi.Name if hasattr(roi, 'Name') else roi for roi in rois_a]
-        rois_b = [roi.Name if hasattr(roi, 'Name') else roi for roi in rois_b]
+        rois_a = list(map(obj_name, rois_a))
+        rois_b = list(map(obj_name, rois_b))
 
-        exp_a = {'Operation': 'Union',
+        a_margin = margin_settings(rois_a_margin, **rois_a_margin_opts)
+        b_margin = margin_settings(rois_b_margin, **rois_b_margin_opts)
+        f_margin = margin_settings(margin, **final_margin_opts)
+
+        exp_a = {'Operation': rois_a_op,
                  'SourceRoiNames': rois_a,
-                 'MarginSettings': margin_settings(rois_a_margin)}
+                 'MarginSettings': a_margin}
 
-        exp_b = {'Operation': 'Union',
+        exp_b = {'Operation': rois_b_op,
                  'SourceRoiNames': rois_b,
-                 'MarginSettings': margin_settings(rois_b_margin)}
+                 'MarginSettings': b_margin}
 
         create_geom_opts = {'Examination': exam,
                             'Algorithm': 'Auto',
                             'ExpressionA': exp_a,
                             'ExpressionB': exp_b,
                             'ResultOperation': operation,
-                            'ResultMarginSettings': margin_settings(margin)}
+                            'ResultMarginSettings': f_margin}
 
         self._roi.CreateAlgebraGeometry(**create_geom_opts)
 
     def check_overlap(self, rois_a, rois_b):
+        # Note: There is a ComparisonOfRoiGeometries member function in the
+        #  StructureSet, however that is significantly slower than this
+        #  operation.
         for exam in self._geometries:
             self.ab_intersect(exam, rois_a, rois_b)
         return all([g.HasContours() for g in self.geoms])
@@ -265,3 +330,124 @@ class ROI(IndirectInheritanceClass):
 
     def Hide(self):
         self.Show('Off', 'Off', False)
+
+
+def flash_margin_from_site(site, margin=0):
+    if 'Breast' in site:
+        margin_out = {'margin': 0}
+        margin_out['Anterior'] = margin
+
+        for lr in ['Left', 'Right']:
+            if lr in site:
+                margin_out[lr] = margin
+
+        return margin_out
+
+    return margin
+
+
+def setup_robust_rois(original_exam, robust_exam, icase, ptv_name,
+                      other_ptv_names=None,
+                      flash_margin=_DEFAULT_FLASH_MARGIN,
+                      override_material=_DEFAULT_MATERIAL_NAME):
+    # TODO: For lateralized disease, only expand in sensible directions.
+    # e.g. for L Breast expand Anterior and Left
+
+    # Function defaulted parameter or static values?
+    FLASH_TO_OVERRIDE_MARGIN = 0.5
+    RO_ROI_NAME = "Robust Override"
+    ROPTI_ROI_NAME = "Robust Opti"
+
+    # Calculated variables from inputs
+    ovr_margin = flash_margin + FLASH_TO_OVERRIDE_MARGIN
+
+    # Make margins non-uniform for select sites
+    override_margin = flash_margin_from_site(icase.BodySite, ovr_margin)
+    flash_margin = flash_margin_from_site(icase.BodySite, flash_margin)
+
+    pm = icase.PatientModel
+    orig_structset = pm.StructureSets[obj_name(original_exam)]
+    robust_structset = pm.StructureSets[obj_name(robust_exam)]
+    external_roi = ROI(orig_structset.OutlineRoiGeometry.OfRoi,
+                       context=orig_structset)
+    external_name = obj_name(external_roi)
+
+    with CompositeAction("Prepare Robust Opti Contours"):
+        builder = ROI_Builder(patient_model=pm,
+                              Color="Blue",
+                              Type="Undefined",
+                              TissueName=None,
+                              RbeCellTypeName=None,
+                              RoiMaterial=None)
+
+        # Make robust override contour
+        robust_override_roi = builder.CreateROI(name=RO_ROI_NAME,
+                                                RoiMaterial=override_material)
+        robust_override_roi.ab_operation(exam=robust_exam,
+                                         rois_a=[ptv_name],
+                                         rois_b=[external_name],
+                                         operation='Subtraction',
+                                         rois_a_margin=override_margin)
+
+        # Make Optimization contour
+        robust_opti_roi = builder.CreateROI(Name=ROPTI_ROI_NAME)
+
+        robust_opti_roi.ab_operation(exam=robust_exam,
+                                     rois_a=[ptv_name],
+                                     rois_b=[external_name],
+                                     operation='Subtraction',
+                                     rois_a_margin=flash_margin)
+
+        # Make Optimization contour on original exam
+        # By default, only have this be the PTV within 1 cm of skin
+        roab_opts = {'exam': original_exam,
+                     'rois_a': [ptv_name],
+                     'rois_b': [external_name],
+                     'operation': 'Subtraction',
+                     'rois_b_margin': 1,
+                     'rois_b_margin_opts': {'direction': 'Contract'}}
+
+        robust_opti_roi.ab_operation(**roab_opts)
+
+        # Remove rois with a different prescribed dose level
+        if other_ptv_names:
+            roab_opts = {'exam': original_exam,
+                         'rois_a': [obj_name(robust_opti_roi)],
+                         'rois_b': other_ptv_names,
+                         'operation': 'Subtraction',
+                         'rois_b_margin': 0.5,
+                         'rois_b_margin_opts': {'direction': 'Expand'}}
+
+            robust_opti_roi.ab_operation(**roab_opts)
+
+        # Make new external on the robust exam only
+        external_roi.ab_operation(exam=robust_exam,
+                                  rois_a=[external_name,
+                                          obj_name(robust_opti_roi)],
+                                  rois_b=[],
+                                  operation='None')
+
+        # Clean the robust external of holes (can randomly occur)
+        robust_structset.SimplifyContours(
+            RoiNames=[external_name],
+            RemoveHoles3D=True,
+            RemoveSmallContours=False,
+            AreaThreshold=None,
+            ReduceMaxNumberOfPointsInContours=False,
+            MaxNumberOfPoints=None,
+            CreateCopyOfRoi=False,
+            ResolveOverlappingContours=False
+        )
+
+        # Recheck the override and opti contours against the new cleaned
+        # external
+        robust_override_roi.ab_intersect(
+            exam=robust_exam,
+            rois_a=[obj_name(robust_override_roi)],
+            rois_b=[external_name])
+        robust_opti_roi.ab_intersect(exam=robust_exam,
+                                     rois_a=[obj_name(robust_opti_roi)],
+                                     rois_b=[external_name])
+
+    return (robust_override_roi,
+            robust_opti_roi)

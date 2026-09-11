@@ -18,6 +18,8 @@ _NAMELIST = ['Name', 'DicomPlanLabel', 'SegmentNumber']
 
 _INDIRECT_MACHINE_REF = {}
 
+_INDIRECT_MATERIAL_REF = {}
+
 
 def helperoverride(function):
     function.__overridden__ = True
@@ -103,29 +105,40 @@ class _CompositeActionDummy():
         _logger.info("Exited  {} Undo state.".format(self._name))
 
 
-class MB_Button(IntEnum):
+class DefIntEnum(IntEnum):
+    @classmethod
+    def _missing_(cls, value):
+        if value in cls.__members__:
+            return cls.__members__[value]
+        elif f'{value}_' in cls.__members__:
+            return cls.__members__[f'{value}_']
+        else:
+            return next(iter(cls))
+
+
+class MB_Button(DefIntEnum):
     OK = 0
     OKCancel = 1
     YesNo = 4
     YesNoCancel = 3
 
 
-class MB_Icon(IntEnum):
+class MB_Icon(DefIntEnum):
+    None_ = 0
     Asterisk = 64
     Error = 16
     Exclamation = 48
     Hand = 16
     Information = 64
-    None_ = 0
     Question = 32
     Stop = 16
     Warning_ = 48
 
 
-class MB_Result(IntEnum):
+class MB_Result(DefIntEnum):
+    None_ = 0
     Cancel = 2
     No = 7
-    None_ = 0
     OK = 1
     Yes = 6
 
@@ -143,9 +156,14 @@ class MB_Options(IntEnum):
     ServiceNotification = 2097152
 
 
-def _Show_MB(message, caption="Message", *args, ontop=False):
+def Show_MB(message, caption, button, icon, defaultResult, ontop=False):
     opt = MB_Options.DefaultDesktopOnly if ontop else MB_Options.None_
-    res = _MessageBox.Show(f"{message}", f"{caption}", *args, opt)
+
+    button = MB_Button(button)
+    icon = MB_Icon(icon)
+    defaultResult = MB_Result(defaultResult)
+    res = _MessageBox.Show(f"{message}", f"{caption}",
+                           button, icon, defaultResult, opt)
     try:
         return MB_Result(res)
     except ValueError:
@@ -157,7 +175,7 @@ def _Show_MB(message, caption="Message", *args, ontop=False):
 def Show_OK(message, caption="OK", ontop=False, icon=MB_Icon.None_,
             defaultResult=MB_Result.None_):
     button = MB_Button.OK
-    return _Show_MB(message, caption, button, icon, defaultResult, ontop=ontop)
+    return Show_MB(message, caption, button, icon, defaultResult, ontop=ontop)
 
 
 def Show_Warning(message, caption="Warning", ontop=True):
@@ -167,19 +185,19 @@ def Show_Warning(message, caption="Warning", ontop=True):
 def Show_OKCancel(message, caption="OK or Cancel?", ontop=False,
                   icon=MB_Icon.None_, defaultResult=MB_Result.None_):
     button = MB_Button.OKCancel
-    return _Show_MB(message, caption, button, icon, defaultResult, ontop=ontop)
+    return Show_MB(message, caption, button, icon, defaultResult, ontop=ontop)
 
 
 def Show_YesNo(message, caption="Yes or No?", ontop=False, icon=MB_Icon.None_,
                defaultResult=MB_Result.None_):
     button = MB_Button.YesNo
-    return _Show_MB(message, caption, button, icon, defaultResult, ontop=ontop)
+    return Show_MB(message, caption, button, icon, defaultResult, ontop=ontop)
 
 
 def Show_YesNoCancel(message, caption="Yes, No, or Cancel?", ontop=False,
                      icon=MB_Icon.None_, defaultResult=MB_Result.None_):
     button = MB_Button.YesNoCancel
-    return _Show_MB(message, caption, button, icon, defaultResult, ontop=ontop)
+    return Show_MB(message, caption, button, icon, defaultResult, ontop=ontop)
 
 
 def _await_user_input_mb(message):
@@ -209,6 +227,53 @@ class VERSION(str):
     @property
     def revision(self):
         return self.__safe_number__(3)
+
+    def __hash__(self):
+        return super().__hash__()
+
+    def __eq__(self, other):
+        if isinstance(other, int):
+            return self.major == other
+
+        if not isinstance(other, type(self)):
+            return self == type(self)(other)
+
+        return str.__eq__(self, other)
+
+    def __lt__(self, other):
+        if isinstance(other, int):
+            return self.major < other
+
+        if not isinstance(other, type(self)):
+            return self < type(self)(other)
+
+        if self == other:
+            return False
+        elif self.major > other.major:
+            return False
+        elif self.major < other.major:
+            return True
+        elif self.minor > other.minor:
+            return False
+        elif self.minor < other.minor:
+            return True
+        elif self.build > other.build:
+            return False
+        elif self.build < other.build:
+            return True
+        elif self.revision > other.revision:
+            return False
+        elif self.revision < other.revision:
+            return True
+
+    def __le__(self, other):
+        return self == other or self < other
+
+    def __gt__(self, other):
+        return not self <= other
+
+    def __ge__(self, other):
+        return self == other or self > other
 
 
 try:
@@ -272,8 +337,6 @@ finally:
         def __init__(self, *args, **kwargs):
             self.my_args = (args, kwargs)
             self.instance
-            if RS_VERSION.major == 14:
-                _logger.warning("RS 14 is broken, don't use composite action")
 
         @property
         def instance(self):
@@ -322,7 +385,10 @@ finally:
         def __exit__(self, e_type, e, e_traceback):
             cls = type(self)
             if e_type is not None:
-                _logger.exception(str(e))
+                if isinstance(e_type, Warning):
+                    _logger.warning(f'{e!s}')
+                else:
+                    _logger.exception(f'{e!s}')
 
             if self == cls._clsinstance and not cls._blocked:
                 # We were the first launch of CompositeAction, we can now clear
@@ -344,27 +410,46 @@ finally:
     class SuspendCompositeAction:
         _clsinstance = None
         _CompositeActionClass = CompositeAction
+        _active_ca_wrapper = None
         active_action_args = None
         message = "Suspending composite action"
 
         def __init__(self, reason=None):
-            if not type(self)._clsinstance:
+            cls = type(self)
+            if cls._clsinstance is None:
                 # First time being used.
-                type(self)._clsinstance = self
+                cls._clsinstance = self
 
             if reason:
                 self.message = f"{self.message}: ({reason})"
 
+        @property
+        def active_ca_wrapper(self):
+            cls = type(self)
+            return cls._active_ca_wrapper
+
+        @active_ca_wrapper.setter
+        def active_ca_wrapper(self, active_ca):
+            cls = type(self)
+            cls._active_ca_wrapper = active_ca
+
         def __enter__(self):
             cls = type(self)
+            if cls._clsinstance != self:
+                # Only do this in the root.
+                _logger.debug("Can only be in root of SuspendCompositeAction")
+                return None
+
             ca_class = cls._CompositeActionClass
             ca_class.block()
-            if ca_class.isactive:
+            if ca_class._clsinstance is not None:
                 # Currently in a CompositeAction, suspend it.
                 _logger.info(f"{self.message}")
                 self.active_ca_wrapper = ca_class.get_active_singleton()
                 # Exit the composite action without an error.
                 self.active_ca_wrapper.__exit__(None, None, None)
+            else:
+                _logger.info(f"Not in a composite action ({self.message}).")
 
             return None
 
@@ -597,8 +682,9 @@ class ListSelectorDialog(RayWindow):
 
     <StackPanel Background="#FFE6E6E6" MinHeight="20" Margin="0">
         <Label x:Name="PickerLabel" Content="Select one:"/>
-        <StackPanel x:Name="ListPanel">
-        </StackPanel>
+        <ScrollViewer MaxHeight="800" VerticalScrollBarVisibility="Auto">
+            <StackPanel x:Name="ListPanel"/>
+        </ScrollViewer>
     </StackPanel>
 </Window>
     """
@@ -1334,6 +1420,8 @@ class BeamReorderDialog(GenericReorderDialog):
     FirstBeamNo = None  # Text
 
     def __init__(self, list_in, results):
+        # Sort beams by beam.Number
+        list_in = sorted(list_in, key=lambda beam: beam.Number)
         super().__init__(list_in, results)
 
         if 'description' in results:
@@ -1591,7 +1679,8 @@ class SegmentReorderDialog(GenericReorderDialog):
 
 
 def renumber_beams(beamset, dialog=False):
-    beam_map = {beam.Number: beam for beam in beamset.Beams}
+    ubm = {beam.Number: beam for beam in beamset.Beams}
+    beam_map = {n: ubm[n] for n in sorted(ubm)}
     beam_nos = list(beam_map)
     non_sequential = any(map(lambda x, y: y != x+1,
                              beam_nos[:-1], beam_nos[1:]))
@@ -1648,7 +1737,11 @@ def guess_name_id(obj_collection, first_guess=None):
     if first_guess:
         guess_list.append(first_guess)
 
-    first_obj = next(iter(obj_collection))
+    try:
+        first_obj = next(iter(obj_collection))
+    except StopIteration:
+        raise IndexError(f"{obj_collection=} does not have a first object.")
+
     guess_list += [attr for attr in dir(first_obj) if attr[0:3] == 'For']
 
     for guess in guess_list:
@@ -1664,10 +1757,32 @@ def guess_name_id(obj_collection, first_guess=None):
     raise ValueError("Unable to guess unique name id.")
 
 
-def pick_list(obj_list, description="Select One", current=None, default=None):
+class PickedNone:
+    __slots__ = ('Name', )
+
+    def __init__(self, Name='None'):
+        self.Name = str(Name)
+
+    def __str__(self):
+        return f'{self.__class__.__name__}("{self.Name}")'
+
+    def __repr__(self):
+        return str(self)
+
+
+def pick_list(obj_list, description="Select One",
+              current=None, default=None,
+              include_none=False,
+              raise_on_cancel=True):
     results = {'current': current,
                'default': default,
                'description': description}
+
+    none_result = PickedNone(include_none)
+
+    if include_none:
+        obj_list = list(obj_list)
+        obj_list.append(none_result)
 
     # Don't bother with a dialog if there is only one, or no choice(s).
     if len(obj_list) == 1:
@@ -1680,34 +1795,41 @@ def pick_list(obj_list, description="Select One", current=None, default=None):
         res = dlg.ShowDialog()
 
         if not res:
-            raise Warning("Closed with cancel")
+            raise Warning("Selection dialog cancelled.")
 
-    except Warning:
+    except Warning as e:
         _logger.warning("Dialog failed to run correctly.", exc_info=True)
+        if raise_on_cancel:
+            raise e
 
-    if 'Selected' in results:
+    if 'Selected' in results and results['Selected'] != none_result:
         return results['Selected']
     else:
         return None
 
 
 def pick_exam(exams=None, include_current=True, default=None,
-              message="Select Exam:"):
+              exclude=None, message="Select Exam:", **kwargs):
     try:
         current = obj_name(get_current("Examination"))
     except InvalidDataException:
         _logger.debug("No current examination selected.")
         current = None
 
-    exams = exams if exams else [exam for exam in
-                                 get_current("Case").Examinations
-                                 if include_current
-                                 or obj_name(exam) != obj_name(current)]
-    return pick_list(exams, message, current=current, default=default)
+    if exclude:
+        exclude = [obj_name(exam) for exam in exclude]
+
+    if not exams:
+        exams = [exam for exam in
+                 get_current("Case").Examinations
+                 if ((include_current or obj_name(exam) != current)
+                     and not (exclude and obj_name(exam) in exclude))]
+    return pick_list(exams, message, current=current, default=default,
+                     **kwargs)
 
 
 def pick_plan(plans=None, include_current=True, default=None,
-              message="Select Plan:"):
+              message="Select Plan:", **kwargs):
     try:
         current = obj_name(get_current("Plan"))
     except InvalidDataException:
@@ -1718,11 +1840,38 @@ def pick_plan(plans=None, include_current=True, default=None,
                                  get_current("Case").TreatmentPlans
                                  if include_current
                                  or obj_name(plan) != obj_name(current)]
-    return pick_list(plans, message, current=current, default=default)
+    return pick_list(plans, message, current=current, default=default,
+                     **kwargs)
+
+
+def pick_beamset(beamsets=None, include_current=True, default=None,
+                 message="Select BeamSet:",
+                 **kwargs):
+    try:
+        current_bs = get_current("BeamSet")
+        current = (f'{obj_name(get_current("Plan"))}: '
+                   f'{obj_name(current_bs)}')
+    except InvalidDataException:
+        _logger.debug("No current beamset selected.")
+        current = None
+
+    _logger.debug(f"{current=}")
+
+    beamset_picks = beamsets if beamsets else {
+        f'{obj_name(plan)}: {obj_name(beamset)}': beamset
+        for plan in get_current("Case").TreatmentPlans
+        for beamset in plan.BeamSets
+        if (include_current
+            or current_bs.BeamSetIdentifier() != beamset.BeamSetIdentifier())}
+    selected = pick_list(beamset_picks, message,
+                         current=current, default=default,
+                         **kwargs)
+    return selected if (beamsets or not selected) else beamset_picks[selected]
 
 
 def pick_machine(current=None, default=None, match_on=None,
-                 exclude_current=False, message="Select machine:"):
+                 exclude_current=False, message="Select machine:",
+                 **kwargs):
     def_filter_dict = {'IsLinac': True,
                        'HasMlc': True,
                        'Name': None,
@@ -1767,7 +1916,31 @@ def pick_machine(current=None, default=None, match_on=None,
                 machines.remove(machine)
 
     return pick_list(machines, message,
-                     current=current, default=default)
+                     current=current, default=default,
+                     **kwargs)
+
+
+def pick_roi(rois=None, default=None, exclude_types=None, include_types=None,
+             message="Select an ROI",
+             **kwargs):
+    """
+    Dialog to select an ROI from the list.
+
+    exclude_types [List]: exlude any ROIs with this type
+    include_types [List]: if set, ONLY include rois of this type.
+    """
+    if not rois:
+        rois = get_current("Case").PatientModel.RegionsOfInterest
+    if exclude_types or include_types:
+        try:
+            rois = [roi for roi in rois
+                    if not (exclude_types and roi.Type in exclude_types)
+                    and (not include_types or roi.Type in include_types)]
+        except AttributeError:
+            _logger.warning('exclude_types only possible when passed a list of'
+                            f' rois, but passed {rois=}')
+
+    return pick_list(rois, message, default=default, **kwargs)
 
 
 @dataclass
@@ -1903,7 +2076,7 @@ def get_machine(machine_ref):
         gtm = mach_db.GetTreatmentMachine
         # GetTreatmentMachine is unsafe in CompositeAction in RS2023B, for now
         # bubble out of CA.
-        if RS_VERSION.major > 14:
+        if RS_VERSION >= 14:
             with SuspendCompositeAction('GetTreatmentMachine'):
                 mach = Machine(gtm(machineName=machine_name))
         else:
@@ -1912,6 +2085,10 @@ def get_machine(machine_ref):
         _INDIRECT_MACHINE_REF[machine_name] = mach
 
     return _INDIRECT_MACHINE_REF[machine_name]
+
+
+def get_known_machines():
+    return [k for k in _INDIRECT_MACHINE_REF]
 
 
 def pick_site(sites=None, current=None, default=None):
@@ -2214,6 +2391,20 @@ def populate_machines(infilter=None, exclude_rsl=True):
     for machine in (m for m in machines_info_list
                     if (not exclude_rsl or 'RSL_' not in m['Name'])):
         get_machine(machine['Name'])
+
+
+def get_override_material(material):
+    _logging.debug(f"Getting material {material=}")
+
+    material = obj_name(material)
+
+    if material not in _INDIRECT_MATERIAL_REF:
+        patient_db = get_current('PatientDB')
+
+        _INDIRECT_MATERIAL_REF.update({m.Material.Name: m.Material for m in
+                                       patient_db.GetTemplateMaterials()})
+
+    return _INDIRECT_MATERIAL_REF[material]
 
 
 # __all__ = [dcmread, CompositeAction, get_current]

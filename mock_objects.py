@@ -163,6 +163,25 @@ def MakeMockery(root, attr, from_sequence=False):  # noqa: C901
 
 
 class MetaSlotsFromHints(type):
+    """Metaclass which will allow us to either have two different types of mock
+    object classes with the same class definition structure and process,
+    depedning on if python3 type hints were used in the declaration of the
+    class.
+
+    If type hints were used (appear in the __annotations__ object of the class,
+    then those are set to be "slots" in python, meaning no other members of the
+    class can be declared after the fact without throwing an attribute error.
+
+    If type hints were not used, then the class will be treated like a
+    "new-style" python class, and the __dict__ will contain references to all
+    of the members of the class, and new members can be arbitrarily defined.
+
+    This structure lets us define mock object classes by simple declaring a new
+    class and adding type hints for all of the known members of that class,
+    which makes reading through the list of mock_objects and understanding
+    their invocation, as well as generating them from the documentation,
+    significantly easier.
+    """
     def __new__(metacls, name, bases, dct):
         hints = dct.get('__annotations__', {}).keys()
         slots = set(dct.get('__slots__', ()))
@@ -273,10 +292,12 @@ class MockObject(object, metaclass=MetaSlotsFromHints):
             _logger.debug(f"Couldn't clone: {e}", exc_info=True)
 
     def CopyTo(self, other):
-        # Copies values in self to other if keys exist in both.
-        # If self has _COPY_ONLY set, this will only copy those attributes,
-        # otherwise, it will copy all type hinted parameters EXCEPT those
-        # list in _COPY_EXCLUDE.
+        """
+        Copies values in self to other if keys exist in both.
+        If self has _COPY_ONLY set, this will only copy those attributes,
+        otherwise, it will copy all type hinted parameters EXCEPT those
+        listed in _COPY_EXCLUDE.
+        """
         hints = get_type_hints(self)
         attrs = set(self._COPY_ONLY if self._COPY_ONLY else hints.keys())
 
@@ -635,6 +656,141 @@ class MockPatient(MockObject):
             kwargs['Cases'] = cases
         super().__init__(*args, **kwargs)
 
+
+class MockConstraint(MockObject):
+    # TODO: Determine features of Constraint object.
+    pass
+
+
+class MockComparativeEvaluation(MockObject):
+    # TODO: Determine features of ComparativeEvaluation object.
+    pass
+
+
+class MockDoseFunctionParameters(MockObject):
+    # TODO: Determine features of DoseFunctionParameters object.
+    pass
+
+
+class MockDoseGridStructures(MockObject):
+    # TODO: Determine features of DoseGridStructures object.
+    pass
+
+
+class MockDoseDistribution(MockObject):
+    # TODO: Determine features of DoseDistribution object.
+    pass
+
+
+class MockDoseGridRoi(MockObject):
+    # TODO: Determine features of DoseGridRoi object.
+    pass
+
+
+class MockResponseFunctionParameters(MockObject):
+    # TODO: Determine features of ResponseFunctionParameters object.
+    pass
+
+
+GoalTypeEnum = Enum('GoalType',
+                    {
+                        'AverageDose': 'AverageDose',
+                        'VolumeAtDose': 'VolumeAtDose',
+                        'DoseAtVolume': 'DoseAtVolume',
+                        'DoseAtPoint': 'DoseAtPoint',
+                        'AbsoluteVolumeAtDose': 'AbsoluteVolumeAtDose',
+                        'DoseAtAbsoluteVolume': 'DoseAtAbsoluteVolume',
+                        'ConformityIndex': 'ConformityIndex',
+                        'HomogeneityIndex': 'HomogeneityIndex',
+                    },
+                    module=__name__, type=str)
+
+
+GoalCriteriaEnum = Enum('GoalCriteria',
+                        {
+                            'AtLeast': 'AtLeast',
+                            'AtMost': 'AtMost',
+                        },
+                        module=__name__, type=str)
+
+
+class MockPlanningGoal(MockObject):
+    AcceptanceLevel: float
+    GoalCriteria: GoalCriteriaEnum
+    IsComparativeGoal: bool
+    ParameterValue: float
+    Priority: int
+    RejectPlanOnFail: bool
+    Tolerance: float
+    Type: GoalTypeEnum
+
+    def __csv__(self):
+        Volume = ''
+        Dose = ''
+        Type = self.Type.replace('Absolute', '')
+        Direction = str(self.GoalCriteria)
+        Absolute = 'Absolute' in str(self.Type)
+
+        if Type == 'AverageDose':
+            Dose = self.AcceptanceLevel
+        elif Type in ('VolumeAtDose', 'ConformityIndex'):
+            Dose = self.ParameterValue
+            Volume = self.AcceptanceLevel
+        elif Type in ('DoseAtVolume', 'HomogeneityIndex'):
+            Dose = self.AcceptanceLevel
+            Volume = self.ParameterValue
+
+        return ','.join([
+            Volume,
+            Dose,
+            Type,
+            Direction,
+            Absolute,
+        ])
+
+
+class MockClinicalGoal(MockObject):
+    Tag: str
+    UseBeamSpecificForAllBeams: bool
+    UseRobustness: bool
+    ComparativeEvaluations: List[MockComparativeEvaluation]
+    Constraint: MockConstraint
+    DoseFunctionParameters: MockDoseFunctionParameters
+    ForDoseGridStructures: MockDoseGridStructures
+    ForRegionOfInterest: MockStructure
+    FunctionValue: float
+    OfDoseDistribution: MockDoseDistribution
+    OfDoseGridRoi: MockDoseGridRoi
+    PlanningGoal: MockPlanningGoal
+    ResponseFunctionParameters: MockResponseFunctionParameters
+
+    # TODO: Deal with methods
+    """
+    DeleteFunction: PyScriptMethod
+    EvaluateClinicalGoal: PyScriptMethod
+    EvaluateClinicalGoalForAccumulatedDose: PyScriptMethod
+    EvaluateClinicalGoalForEvaluationDose: PyScriptMethod
+    GetClinicalGoalValue: PyScriptMethod
+    GetClinicalGoalValueForAccumulatedDose: PyScriptMethod
+    GetClinicalGoalValueForEvaluationDose: PyScriptMethod
+    """
+
+    def __csv__(self):
+        return ','.join([
+            str(self.ForRegionOfInterest.Name).replace('\'', '\\\''),
+            self.PlanningGoal.__csv__()
+        ])
+
+
+""" Describe object OBJ
+
+print('\n'.join((*[f'{m}: {type(getattr(OBJ, m)).__name__}' for m in dir(OBJ)
+                    if not callable(getattr(OBJ,m))],
+                '',
+                *[f'{m}: Function' for m in dir(OBJ)
+                    if callable(getattr(OBJ,m))])))
+
+"""
 
 _MOCKERY_MAPPINGS.update({
     'OnStructure': MockStructure,

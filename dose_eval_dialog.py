@@ -12,7 +12,7 @@ from System.Collections.Generic import List
 
 from .external import get_current, obj_name, RayWindow
 from .mock_objects import MockObject, MockPrescriptionDoseReference
-from .plans import beamset_conformity_indices
+from .plans import beamset_conformity_indices, bs_equals
 
 from math import inf
 
@@ -224,6 +224,7 @@ class TargetRoiComboBoxItem(ComboBoxItem):
 class ConformityIndicesWindow(RayWindow):
     active_site = "Brain"
     roi_data = None
+    active_plandata = None
     # PlanSelectComboBox: type[ComboBox]  # Wait for Py 3.10 for typing
     # ROIComboBox: type[ComboBox]  # Wait for Py 3.10 for typing
 
@@ -882,7 +883,7 @@ class ConformityIndicesWindow(RayWindow):
             for plan in casedata.TreatmentPlans:
                 plans += [{'BeamSet': bs,
                            'Plan': plan,
-                           'Selected': bs.UniqueId == beamset.UniqueId}
+                           'Selected': bs_equals(bs, beamset)}
                           for bs in plan.BeamSets]
                 plans.append(None)
 
@@ -896,13 +897,13 @@ class ConformityIndicesWindow(RayWindow):
         if casedata and selected_plan in casedata.TreatmentPlans:
             plans = [{'BeamSet': bs,
                       'Plan': plan,
-                      'Selected': bs.UniqueId == beamset.UniqueId}
+                      'Selected': bs_equals(bs, beamset)}
                      for plan in casedata.TreatmentPlans
                      for bs in plan.BeamSets]
         elif selected_plan:
             plans = [{'BeamSet': beamset,
                       'Plan': selected_plan,
-                      'Selected': bs.UniqueId == beamset.UniqueId}
+                      'Selected': bs_equals(bs, beamset)}
                      for bs in selected_plan.BeamSets]
 
         _logger.debug(f'{plans=}')
@@ -925,6 +926,9 @@ class ConformityIndicesWindow(RayWindow):
             if plandata['Selected']:
                 planitem.IsSelected = plandata['Selected']
                 self.active_plandata = plandata
+
+        if not self.active_plandata:
+            self.active_plandata = plans[0]
 
         _logger.debug("Added plans to combobox")
 
@@ -1121,6 +1125,7 @@ class ConformityIndicesWindow(RayWindow):
 
 
 def show_indices_dialog(beamset, plan=None, casedata=None):
+    # TODO: Handle None beamset case
     indices_dialog = ConformityIndicesWindow(beamset, plan, casedata)
     result = indices_dialog.ShowDialog()
     return result

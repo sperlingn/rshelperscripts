@@ -69,7 +69,7 @@ KNOWN_TOPS = {
          'tx_machines': 'TrueBeam'},
     'Edge Couch Model':
         {'surface_roi': 'Outer Shell - Edge',
-         'default_offset': {'x': 0., 'y': 0., 'z': -1.86},
+         'default_offset': {'x': 0., 'y': -.35, 'z': -1.86},
          'tx_machines': 'Edge'},
     'Edge Head & Neck Model':
         {'surface_roi': 'Outer Shell - Edge H&N',
@@ -308,7 +308,7 @@ def find_table_height(series, resolution=None, search_start=None,
 
         _logger.debug(f"{edge_pairs=}")
         for edge_pair in edge_pairs:
-            edge = edge_pair[not is_rising]
+            edge = edge_pair[is_rising]
             # Only return if it seems reasonable.
             _logger.debug(f"{abs(default - edge.y) =}")
             if abs(default - edge.y) <= CT_DEFAULT_Y_TOLERANCE:
@@ -335,8 +335,10 @@ def get_or_find_table_height(series, /, icase=None, resolution=None,
     case_couch_y = case_data.get('couch_y', {})
 
     if series.UID in case_couch_y and not force:
+        _logger.debug(f"Found couch height in case data ({case_couch_y}).")
         return case_couch_y[series.UID]
     else:
+        _logger.debug(f"Didn't find couch in case data ({case_couch_y}).")
         couch_y = find_table_height(**fth_kwargs)
         case_couch_y[series.UID] = couch_y
 
@@ -966,7 +968,7 @@ class CouchTop(object):
         self._apply_transform(structure_set, transform)
 
     def remove_from_case(self, geometry_only=True, examination=None):
-        with CompositeAction("Remove {self.Name} couch from case."):
+        with CompositeAction(f"Remove {self.Name} couch from case."):
             for roi in self._rois.values():
                 if geometry_only:
                     roi.DeleteGeometry(Examination=examination)
@@ -1189,7 +1191,7 @@ def addcouchtoexam(icase, examination=None, plan=None,
             while existing_tops:
                 existing_tops.pop().remove_from_case(geometry_only)
 
-    if 'couch_y' in kwargs:
+    if 'couch_y' in kwargs and kwargs['couch_y'] is not None:
         top_height = kwargs['couch_y']
         del kwargs['couch_y']
     else:
@@ -1197,6 +1199,7 @@ def addcouchtoexam(icase, examination=None, plan=None,
 
     top = tops.determine_top(icase, plan)
 
+    _logger.debug(f"Adding top {top.Name} to exam at height {top_height}.")
     with CompositeAction(f"Add {top.Name} to case"):
         top.add_to_case(icase, examination, top_height, **kwargs)
 

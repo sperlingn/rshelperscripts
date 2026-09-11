@@ -4,9 +4,10 @@ from .external import (CompositeAction as CompositeAction, ObjectDict,
                        params_from_mapping, get_machine, obj_name, clamp,
                        rs_getattr, rs_hasattr, sequential_dedup_return_list,
                        dup_object_param_values, CallLaterList, get_unique_name,
-                       Show_OK, renumber_beams)
-from .examinations import duplicate_exam as _duplicate_exam
-from .roi import ROI_Builder
+                       Show_OK, renumber_beams, RS_VERSION, get_current,
+                       pick_roi, pick_exam, pick_list)
+from .examinations import duplicate_exam
+from .roi import ROI_Builder, setup_robust_rois
 from .i18n import BEAMNAME_QUADRANT_TO_NAME, BEAMNAME_BREAST_SC_PA
 from difflib import get_close_matches
 # from .points import point as _point
@@ -55,6 +56,7 @@ _BS_PARAM_MAPPING = {
 
 _BS_PARAM_DEFAULT = {
     'ExaminationName': None,  # Needs to be set from new plan
+    'MachineName': '',
     'UseLocalizationPointAsSetupIsocenter': False,
     'UseUserSelectedIsocenterSetupIsocenter': False,
     'RbeModelName': None,
@@ -158,7 +160,6 @@ _ISOCENTER_PARAM_MAPPING = {
     'Color': 'Annotation.DisplayColor'
 }
 
-
 _OPTIMIZATION_FN_PARAM_MAPPING = {
     'FunctionType': cll.get_opt_fn_type,
     'RoiName': 'ForRegionOfInterest.Name',
@@ -170,7 +171,6 @@ _OPTIMIZATION_FN_PARAM_MAPPING = {
     'UseRbeDose': None
 }
 
-
 _OPTIMIZATION_FN_DEFAULT = {
     'IsConstraint': False,
     'RestrictAllBeamsIndividually': False,
@@ -179,7 +179,6 @@ _OPTIMIZATION_FN_DEFAULT = {
     'RestrictToBeamSet': None,
     'UseRbeDose': False
 }
-
 
 _OPTIMIZATION_FN_TYPES = {
     'MinDose',
@@ -194,12 +193,17 @@ _OPTIMIZATION_FN_TYPES = {
     'UniformityConstraint'
 }
 
-
 _OPTIMIZATION_FN_PARAM_EXCLUDE = {
     'LqModelParameters',
     'DoseGridStructuresSource',
     'ForTargetRoi',
     'OfTargetDoseGridRoi'
+}
+
+_OPTIMIZATION_FN_PARAM_DOSETYPE = {
+    'HighDoseLevel',
+    'LowDoseLevel',
+    'DoseLevel'
 }
 
 _OPTIMIZATION_PARAM_EXCLUDE = {
@@ -251,6 +255,9 @@ def get_technique_from_beamset(beamset):
             return 'SMLC'
         elif beamset.DeliveryTechnique == 'DMLC':
             return 'DMLC'
+        else:
+            # TODO: Decide if we should raise an exception or use a default.
+            return 'VMAT'
 
     elif beamset.PlanGenerationTechnique == 'Conformal':
         if beamset.DeliveryTechnique == 'SMLC':
@@ -259,6 +266,9 @@ def get_technique_from_beamset(beamset):
             return 'StaticArc'
         elif beamset.DeliveryTechnique == 'DynamicArc':
             return 'ConformalArc'
+        else:
+            # TODO: Decide if we should raise an exception or use a default.
+            return 'Conformal'
 
     else:
         raise NotImplementedError("Couldn't determine beamset delivery")
@@ -369,22 +379,28 @@ def params_from_plan(plan):
 
 def copy_plan_to_duplicate_exam(patient, icase, plan_in,
                                 exam_out_name=None, exclude_segments=True,
-                                forced_machine=None):
+                                forced_machine=None,
+                                keep_beams=True,
+                                plan_out_name=None):
     exam_in = plan_in.BeamSets[0].GetPlanningExamination()
-    exam_out = _duplicate_exam(patient, icase, exam_in,
-                               exam_name_out=exam_out_name)
+    exam_out = duplicate_exam(patient, icase, exam_in,
+                              exam_name_out=exam_out_name)
 
     return copy_plan_to_exam(icase, plan_in, exam_out,
                              exclude_segments=exclude_segments,
-                             forced_machine=forced_machine)
+                             forced_machine=forced_machine,
+                             keep_beams=keep_beams,
+                             plan_out_name=plan_out_name)
 
 
 def copy_plan_to_exam(icase, plan_in, exam_out, exclude_segments=False,
-                      forced_machine=None):
+                      forced_machine=None, keep_beams=True, keep_opt=True,
+                      plan_out_name=None):
     plan_params = params_from_plan(plan_in)
 
-    plan_out_name = get_unique_name(f'{plan_in.Name} (dup)',
-                                    icase.TreatmentPlans)
+    plan_out_name = get_unique_name(
+        plan_out_name if plan_out_name else f'{plan_in.Name} (dup)',
+        icase.TreatmentPlans)
 
     plan_params['ExaminationName'] = exam_out.Name
 
@@ -396,14 +412,15 @@ def copy_plan_to_exam(icase, plan_in, exam_out, exclude_segments=False,
         plan_out = icase.AddNewPlan(**plan_params)
         copy_plan_to_plan(plan_in, plan_out, exam_out,
                           exclude_segments=exclude_segments,
-                          forced_machine=forced_machine)
+                          forced_machine=forced_machine,
+                          keep_beams=keep_beams, keep_opt=keep_opt)
 
     return icase.TreatmentPlans[plan_out_name]
 
 
 def copy_plan_to_plan(plan_in, plan_out,
                       exam_out=None, exclude_segments=False,
-                      forced_machine=None):
+                      forced_machine=None, keep_beams=True, keep_opt=True):
 
     tempbs = None
     if len(plan_out.BeamSets) > 1:
@@ -425,22 +442,28 @@ def copy_plan_to_plan(plan_in, plan_out,
     for bs in plan_in.BeamSets:
         copy_bs(plan_in, bs, plan_out, exam_out.Name,
                 exclude_segments=exclude_segments,
-                forced_machine=forced_machine)
+                forced_machine=forced_machine, keep_beams=keep_beams)
 
+    _logger.debug("Done Copying beamsets.")
     # Done with the placeholder beamset.
     if tempbs:
         tempbs.DeleteBeamSet()
 
+    _logger.debug("Prepare to copy clinical goals.")
     copy_clinical_goals(plan_in, plan_out)
 
-    copy_plan_optimizations(plan_in, plan_out)
+    if keep_opt:
+        _logger.debug("Prepare to copy optimizations.")
+        copy_plan_optimizations(plan_in, plan_out)
+    else:
+        _logger.debug("Skipping optimizations.")
 
     return plan_out
 
 
 def copy_bs(plan_in, beamset_in, plan_out,
             examination_name=None, exclude_segments=False,
-            forced_machine=None):
+            forced_machine=None, keep_beams=True):
     _logger.debug(f"Copying {beamset_in} to {plan_out} as new beamset.")
 
     params = params_from_beamset(beamset_in, examination_name)
@@ -448,9 +471,11 @@ def copy_bs(plan_in, beamset_in, plan_out,
     if forced_machine is not None:
         params['MachineName'] = forced_machine
 
-    _logger.debug(f"Adding new beamset with {params=}")
+    if params['Modality'] == 'Unknown':
+        # TODO: Try to handle imported dose plans better.
+        params['Modality'] = 'Photons'
 
-    final_technique = params['TreatmentTechnique']
+    _logger.debug(f"Adding new beamset with {params=}")
 
     plan_out.AddNewBeamSet(**params)
 
@@ -458,24 +483,43 @@ def copy_bs(plan_in, beamset_in, plan_out,
 
     copy_rx(beamset_in, beamset_out)
 
+    changed_technique = False
     if 'Arc' in beamset_in.DeliveryTechnique and \
             not native_copy_ok(beamset_in, beamset_out):
         # Some type of arc, for now beamset_out must be set to conformal arc to
         # allow creation of segments.
+        changed_technique = params['TreatmentTechnique']
         beamset_out.SetTreatmentTechnique(Technique='ConformalArc')
 
-    copy_beams(plan_in, beamset_in, plan_out, beamset_out,
-               exclude_segments=exclude_segments)
+    _logger.debug("Prepare to copy beams.")
+    if keep_beams and beamset_in.Beams and len(beamset_in.Beams) > 0:
+        copy_beams(plan_in, beamset_in, plan_out, beamset_out,
+                   exclude_segments=exclude_segments)
 
-    # After copying beams, set technique back to intended.
-    if params['TreatmentTechnique'] != final_technique:
-        beamset_out.SetTreatmentTechnique(Technique=final_technique)
+    _logger.debug("After copying beams, set technique back to intended.")
+    if changed_technique:
+        beamset_out.SetTreatmentTechnique(Technique=changed_technique)
 
     # Dose Grid
+    _logger.debug("Update Dosegrid.")
     dg_params = params_from_dosegrid(beamset_in.GetDoseGrid())
     beamset_out.UpdateDoseGrid(**dg_params)
 
     return beamset_out
+
+
+def copy_bs_dose(beamset_in, beamset_out):
+    # Should do checking for dose grid, but naive right now.
+    try:
+        # Dose Grid
+        dg_params = params_from_dosegrid(beamset_in.GetDoseGrid())
+        beamset_out.UpdateDoseGrid(**dg_params)
+
+        dose_in = beamset_in.FractionDose.DoseValues.DoseData.flatten()
+        beamset_out.FractionDose.SetDoseValues(Dose=dose_in,
+                                               CalculationInfo='Copied dose')
+    except (ValueError, AttributeError):
+        pass
 
 
 def copy_rx(beamset_in, beamset_out):
@@ -516,13 +560,14 @@ def copy_rx(beamset_in, beamset_out):
 
 
 def beam_opt_settings_from_plan(plan, beamset, beam):
-    bsid = beamset.UniqueId
+    bsid = beamset.BeamSetIdentifier()
     for opt in plan.PlanOptimizations:
         # Skip if this is not an opt for this plan.
-        if bsid not in (obs.UniqueId for obs in opt.OptimizedBeamSets):
+        if bsid not in (obs.BeamSetIdentifier()
+                        for obs in opt.OptimizedBeamSets):
             continue
         for tx_setup in opt.OptimizationParameters.TreatmentSetupSettings:
-            if tx_setup.ForTreatmentSetup.UniqueId != bsid:
+            if tx_setup.ForTreatmentSetup.BeamSetIdentifier() != bsid:
                 # Not for this beamset, skip.
                 continue
             for beamsetting in tx_setup.BeamSettings:
@@ -534,12 +579,32 @@ def beam_opt_settings_from_plan(plan, beamset, beam):
     return None
 
 
+def bs_equals(self, other):
+    if RS_VERSION.major >= 14:
+        # Need to move from UniqueId to BeamSetIdentifier() for
+        # comparison, this should always be valid.
+        return self.BeamSetIdentifier() == other.BeamSetIdentifier()
+    else:
+        return self.UniqueId == other.UniqueId
+
+
+def get_plan_for_bs_from_course(beamset_in, case_in):
+    try:
+        return [plan for plan in case_in.TreatmentPlans
+                if any([bs_equals(beamset_in, bs) for bs in plan.BeamSets])][0]
+    except IndexError:
+        raise IndexError(f"Cannot find beamset '{obj_name(beamset_in)}' in"
+                         f" case '{obj_name(case_in)}'.")
+
+
 def get_opts_for_bs(plan, beamset):
     # Returns a list of PlanOptmizations that optimize this beamset.
-    bsid = beamset.UniqueId
+    bsid = beamset.BeamSetIdentifier()
     return [opt for opt in plan.PlanOptimizations
-            if (bsid in (obs.UniqueId for obs in opt.OptimizedBeamSets) and
-                bsid in (tx_setup.ForTreatmentSetup.UniqueId for tx_setup in
+            if (bsid in (obs.BeamSetIdentifier()
+                         for obs in opt.OptimizedBeamSets) and
+                bsid in (tx_setup.ForTreatmentSetup.BeamSetIdentifier()
+                         for tx_setup in
                          opt.OptimizationParameters.TreatmentSetupSettings))]
 
 
@@ -744,11 +809,7 @@ def copy_plan_optimizations(plan_in, plan_out):
     _logger.debug("Copying optimization objectives "
                   f"from {plan_in} to {plan_out}.")
 
-    n_opts_in = len(plan_in.PlanOptimizations)
-    n_opts_out = len(plan_out.PlanOptimizations)
-    _logger.debug(f"{n_opts_in=}, {n_opts_out=}")
-
-    if n_opts_in != n_opts_out:
+    if len(plan_in.PlanOptimizations) != len(plan_out.PlanOptimizations):
         raise ValueError("Different number of optimization sets. "
                          "Cannot continue.")
 
@@ -759,6 +820,56 @@ def copy_plan_optimizations(plan_in, plan_out):
             copy_optimizations(opt_in, opt_out)
 
 
+def copy_beamset_optimizations(beamset_in, beamset_out,
+                               clear_out=True, scale_doses=True,
+                               plan=None, case=None,
+                               plan_in=None, plan_out=None,
+                               case_in=None, case_out=None):
+
+    _logger.debug("Copying optimization objectives "
+                  f"from {beamset_in} to {beamset_out}.")
+
+    if plan and not plan_in and not plan_out:
+        plan_in = plan_out = plan
+
+    if not (case or case_in or case_out or plan or plan_in or plan_out):
+        # Fall back to using the current case
+        case = get_current("Case")
+
+    # Decide how to find the PlanOptimizations for these plans
+    if case and not case_in and not case_out:
+        case_in = case_out = case
+
+    # Find the plan_in and plan_out in the case from the beamset_in and
+    #  beamset_out
+    if case_in and not plan_in:
+        plan_in = get_plan_for_bs_from_course(beamset_in, case_in)
+
+    if case_out and not plan_out:
+        plan_out = get_plan_for_bs_from_course(beamset_out, case_out)
+
+    opts_in = get_opts_for_bs(plan_in, beamset_in)
+    opts_out = get_opts_for_bs(plan_out, beamset_out)
+
+    if len(opts_in) != len(opts_out):
+        raise ValueError("Different number of optimization sets. "
+                         "Cannot continue.")
+
+    scaling = None
+
+    if scale_doses:
+        ppdr_out = beamset_out.Prescription.PrimaryPrescriptionDoseReference
+        ppdr_in = beamset_in.Prescription.PrimaryPrescriptionDoseReference
+        scaling = ppdr_out.DoseValue / ppdr_in.DoseValue
+
+    with CompositeAction("Copy Optimizations from "
+                         f"{obj_name(beamset_in)} to {obj_name(beamset_out)}"):
+        for opt_in, opt_out in zip(opts_in, opts_out):
+            copy_opt_functions(opt_in, opt_out, clear_out)
+            if scale_doses and scaling != 1:
+                scale_optimization_doses(opt_out, scaling)
+
+
 def copy_optimizations(opt_in, opt_out):
     with CompositeAction(f"Copy Optimizations from {opt_in} to {opt_out}"):
         copy_opt_functions(opt_in, opt_out)
@@ -767,8 +878,17 @@ def copy_optimizations(opt_in, opt_out):
                             opt_out.OptimizationParameters)
 
 
-def copy_opt_functions(opt_in, opt_out):
-    opt_out.ClearConstituentFunctions()
+def copy_opt_functions(opt_in, opt_out, clear_out=True):
+    """
+    Copy the optimization functions from opt_in to opt_out, optionally removing
+    all existing functions in opt_out if clear_out is True
+
+    opt_in: plan.PlanOptimization object in
+    opt_out: plan.PlanOptimization object out
+    clear_out: remove all existing optimizations in opt_out (default: True)
+    """
+    if clear_out:
+        opt_out.ClearConstituentFunctions()
 
     opt_beamsets_out = [bs.DicomPlanLabel for bs in opt_out.OptimizedBeamSets]
     # Allow list of beamsets to include None for composite or single opts
@@ -814,6 +934,16 @@ def copy_opt_functions(opt_in, opt_out):
                                 excludes=_OPTIMIZATION_FN_PARAM_EXCLUDE)
 
 
+def scale_optimization_doses(opt_in, scaling):
+    """
+    Scales all dose related optmization functions by scaling
+    """
+    for fn_in in opt_in.Objective.ConstituentFunctions:
+        dfp_in = fn_in.DoseFunctionParameters
+        for param in (set(dir(dfp_in)) & _OPTIMIZATION_FN_PARAM_DOSETYPE):
+            setattr(dfp_in, param, getattr(dfp_in, param) * scaling)
+
+
 def copy_opt_parameters(optparam_in, optparam_out):
 
     # Duplicate basic objects first
@@ -829,7 +959,7 @@ def copy_opt_parameters(optparam_in, optparam_out):
     for tss_name in tss_dict_out & tss_dict_in:
         copy_opt_tss(tss_dict_in[tss_name], tss_dict_out[tss_name])
 
-    # For robustness, try adding any additional exams present ing the
+    # For robustness, try adding any additional exams present in the
     # PatientGeometryUncertaintyParameters.Examinations collection.
     try:
         rob_in = optparam_in.RobustnessParameters
@@ -846,13 +976,27 @@ def copy_opt_tss(tss_in, tss_out):
     _logger.debug(f"Copying TreatmentSetupSettings {tss_in} to {tss_out}")
 
     # Copy SegmentConversion objects
-    dup_object_param_values(tss_in.SegmentConversion,
-                            tss_out.SegmentConversion,
-                            sub_objs=['ArcConversionProperties'])
+    try:
+        dup_object_param_values(tss_in.SegmentConversion,
+                                tss_out.SegmentConversion,
+                                sub_objs=['ArcConversionProperties'])
+    except TypeError:
+        _logger.info(f"Nothing to copy from {tss_in}.")
+        return
 
-    # Build matching BeamSettings based on obj_name(BS.ForBeam)
-    bss_dict_in = ObjectDict(tss_in.BeamSettings)
-    bss_dict_out = ObjectDict(tss_out.BeamSettings)
+    try:
+        # Build matching BeamSettings based on obj_name(BS.ForBeam)
+        bss_dict_in = ObjectDict(tss_in.BeamSettings)
+    except IndexError:
+        _logger.info(f"No BeamSettings to copy from {tss_in}.")
+        return
+
+    try:
+        # Build matching BeamSettings based on obj_name(BS.ForBeam)
+        bss_dict_out = ObjectDict(tss_out.BeamSettings)
+    except IndexError:
+        _logger.info(f"No beams to copy to {tss_out}.")
+        return
 
     for bss_name in bss_dict_in & bss_dict_out:
         dup_object_param_values(bss_dict_in[bss_name], bss_dict_out[bss_name],
@@ -1124,15 +1268,16 @@ def rename_beams(beamset, icase, dialog=True, do_rename=True):
 
                 name_map = beamname_map(beamset, icase)
 
+                if all([beam['Name'] == beam['NewName']
+                        for beam in name_map.values()]):
+                    # No changes made, bubble out to keep from changing plan
+                    raise Warning("Beams alredy correct, No changes made.")
+
                 set_beamnames_to_number(beamset)
 
                 for beam in beamset.Beams:
                     beam.Name = name_map[beam.Number]['NewName']
 
-                if all([beam['Name'] == beam['NewName']
-                        for beam in name_map.values()]):
-                    # No changes made, bubble out to keep from changing plan
-                    raise Warning("Beams alredy correct, No changes made.")
         except Warning as w:
             if dialog:
                 Show_OK(w, "Beam Rename")
@@ -1143,3 +1288,304 @@ def rename_beams(beamset, icase, dialog=True, do_rename=True):
     return {beam['Name']: beam['NewName']
             for beam in name_map.values()
             if beam['Name'] != beam['NewName']}
+
+
+def prepare_robust_exam(patient, icase, exam_in,
+                        robust_exam=None, dialog=True):
+    """ Find/create and return the exam to be used for robust optmization
+
+    Parameters
+    ----------
+    patient : Patient
+        Patient from get_current('Patient')
+    icase : Case
+        Case in patient (can be from get_current('Case')
+    exam_in : Examination
+        Exam to be used as the basis for the new robust_exam if it is created.
+    robust_exam : Examination, optional
+        Either a name or an exam to use for the robust exam, no checking is
+        done to make sure that this is valid.  If `obj_name(robust_exam)` does
+        not exist in `icase.Examinations`, a new exam will be created with the
+        name set by `obj_name(robust_exam)` (either `robust_exam.Name` or the
+        result of `str(robust_exam)`)
+    dialog : bool, default: True
+        Display a dialog to select when there are multiple options, otherwise
+        try to do the most logical thing. e.g.:
+            `robust_exam` : if not passed, build one using
+                            `f'{exam_in} (Robust)'` as the name
+
+
+
+    """
+    # Make robust exam if it doesn't exist
+    if robust_exam:
+        robust_exam_name = obj_name(robust_exam)
+        if robust_exam_name in icase.Examinations.Keys:
+            robust_exam = icase.Examinations[robust_exam_name]
+        else:
+            robust_exam = None
+    else:
+        robust_exam_name = f'{obj_name(exam_in)} (Robust)'
+
+        if dialog:
+            robust_exam = pick_exam(message=('Select the robust exam '
+                                             '(or cancel to create one).'),
+                                    exclude=[exam_in],
+                                    default=robust_exam_name,
+                                    include_none='Create new copy of exam')
+
+    # Should be done with try: except:, but RS throws InvalidOperationException
+    # instead of the appropriate python KeyError, and in some CompositeAction
+    # states, this can cause RS to crash if it is not allowed to end the
+    # script.
+    if not robust_exam:
+        robust_exam = duplicate_exam(patient, icase, exam_in,
+                                     excluded_roi_types=None,
+                                     exam_name_out=robust_exam_name)
+
+    return robust_exam
+
+
+def guess_robust_type(site, dialog):
+    """ Guess the type of robustness from the treatment site.
+    """
+    type_guess = None
+    lsite = str(site).lower()
+    # Try to guess first
+    if 'breast' in lsite:
+        type_guess = 'Flash'
+    elif 'neck' in lsite:
+        type_guess = 'Flash'
+    elif 'prostate' in lsite:
+        type_guess = 'Gas override'
+
+    if dialog or type_guess is None:
+        robust_type = pick_list(['Flash', 'Skin max', 'Gas override'],
+                                description='Select robustness type',
+                                default=type_guess)
+    else:
+        robust_type = type_guess
+
+    if not robust_type:
+        raise Warning("Must you must select a robustness type.")
+
+    return robust_type
+
+
+def make_robust_opt(plan, beamset, robust_opti_roi, ptv_name,
+                    robust_exam, robust_type):
+    for opt in plan.PlanOptimizations:
+        # Find the dose for the PTV
+        dose = None
+        for pdr in beamset.Prescription.PrescriptionDoseReferences:
+            try:
+                if pdr.OnStructure.Name == ptv_name:
+                    dose = pdr.DoseValue
+            except AttributeError:
+                continue
+
+        if not dose:
+            raise Warning(f'Cannot find dose for PTV "{ptv_name}", cannot add'
+                          ' dose objectives')
+
+        # Only use MinDose for Flash type
+        if robust_type in ['Flash', 'Skin max']:
+            new_opti_kwargs = {
+                "RoiName": obj_name(robust_opti_roi),
+                "IsConstraint": False,
+                "RestrictAllBeamsIndividually": False,
+                "RestrictToBeam": None,
+                "IsRobust": True,
+                "RestrictToBeamSet": None,
+                "UseRbeDose": False
+            }
+
+            if robust_type == 'Flash':
+                min_dose_fn = opt.AddOptimizationFunction(
+                    FunctionType="MinDose", **new_opti_kwargs)
+                min_dose_fn.DoseFunctionParameters.DoseLevel = dose
+
+            max_dose_fn = opt.AddOptimizationFunction(FunctionType="MaxDose",
+                                                      **new_opti_kwargs)
+
+            max_dose_fn.DoseFunctionParameters.DoseLevel = dose * 1.05
+
+        elif robust_type == 'Gas override':
+            for fn in opt.Objective.ConstituentFunctions:
+                if fn.ForRegionOfInterest.Name == ptv_name:
+                    fn.UseRobustness = True
+
+        # Enable robustness for this optmization on the robust_exam
+        robust_params = {
+            "PositionUncertaintyAnterior": 0,
+            "PositionUncertaintyPosterior": 0,
+            "PositionUncertaintySuperior": 0,
+            "PositionUncertaintyInferior": 0,
+            "PositionUncertaintyLeft": 0,
+            "PositionUncertaintyRight": 0,
+            "DensityUncertainty": 0,
+            "PositionUncertaintySetting": "Universal",
+            "IndependentLeftRight": True,
+            "IndependentAnteriorPosterior": True,
+            "IndependentSuperiorInferior": True,
+            "ComputeExactScenarioDoses": False,
+            "NamesOfNonPlanningExaminations": [obj_name(robust_exam)],
+            "PatientGeometryUncertaintyType": "PerTreatmentCourse",
+            "PositionUncertaintyType": "PerTreatmentCourse",
+            "TreatmentCourseScenariosFactor": 1000
+        }
+        opt.OptimizationParameters.SaveRobustnessParameters(**robust_params)
+
+
+def convert_to_robust(patient, icase, plan, beamset, robust_type=None,
+                      margin=1.5, gas_roi=None,
+                      robust_exam=None, dialog=True):
+    """ Set up `plan` in case `icase` for patient `patient` to be optimized
+    robustly using a copy of the primary exam.  If possible, this will
+    determine appropriate contours and type of robustness.  If `dialog` is True
+    it will prompt the user when the decision is not clear, otherwise it will
+    use the defaults.
+
+    For 'Flash' type, an roi will be made that expands the PTV by
+        `margin` (default 1.5cm) (can be non-uniform), and expands the external
+        by an additional 0.5cm (set in roi.py).  The space between the original
+        external and the new external will be overriden to
+        `material` (default 'Cork').  All of this will be done on the
+        `robust_exam` and will not change the plan on the original exam.
+        Finally, the optimization objectives for min and max doses on the
+        "robust opti" contour will be created and the new image set will be set
+        to be robust.
+    For 'Skin Max' type, everything is the same as 'Flash' except a min dose
+        objective will not be created (max dose only).
+    For 'Gas override' type, a "Robust Override" ROI will be created only on
+        the `robust_exam` and the geometry will be copied from `gas_roi`.
+        "Robust Override" roi will have the density set to "Water" and all PTV
+        objectives will be enabled for robustness.
+
+    Parameters
+    ----------
+    patient : Patient
+        Patient from get_current('Patient')
+    icase : Case
+        Case in patient (can be from get_current('Case')
+    plan : TreatmentPlan
+        Treatment plan in case to use, uses the Total Dose Examination as the
+        source for the exam
+    robust_type : {'Flash', 'Skin max', 'Gas override'}, optional
+        The type of robustness that will be used.
+    gas_roi : ROI or str, optional
+        If performing gas override robustness, use `gas_roi` as the gas volume
+        that will be the basis for the "Robust Override" roi.
+        Note: this will also set the robust_type to 'Gas override'
+    robust_exam : Examination, optional
+        Either a name or an exam to use for the robust exam, no checking is
+        done to make sure that this is valid.  If `obj_name(robust_exam)` does
+        not exist in `icase.Examinations`, a new exam will be created with the
+        name set by `obj_name(robust_exam)` (either `robust_exam.Name` or the
+        result of `str(robust_exam)`)
+    dialog : bool, default: True
+        Display a dialog to select when there are multiple options, otherwise
+        try to do the most logical thing. e.g.:
+            `robust_type` : Try to determine from plan type
+            `ptv_name` : Roi name for the first beamset's primary Rx
+            `robust_exam` : if not passed, build one using
+                            `f'{exam_in} (Robust)'` as the name
+
+
+    Internal Process
+    ----------
+    Make a copy of the CT - use duplicate exam function
+    on the copy of the CT:
+        make override contour: (PTV+Flash Margin+0.5cm) - Original External
+            Set override to cork on override contour (Cork?)
+        Make flash optimization contour: (PTV+Flash margin) - Original External
+        Make new external ONLY ON COPY CT: Original External + Override Contour
+    *Make Opti contour on Original CT that is inside the PTV*
+    Make optimization objectives
+        Refer to prescription dose
+    Turn on the robustness in the optimizer
+        Select the new CT as the thing to robust against
+    Make evaluation dose
+        "Compute on additional set" for robust CT
+
+
+    """
+    # Get exam from plan
+    structset_in = plan.GetTotalDoseStructureSet()
+    exam_in = structset_in.OnExamination
+
+    # Get PTV from plan, prompt if there is more than 1
+    try:
+        rx_rois = [rx.OnStructure
+                   for rx in beamset.Prescription.PrescriptionDoseReferences
+                   if rx.OnStructure]
+        bs0_rx = beamset.Prescription
+        rx_default = bs0_rx.PrimaryPrescriptionDoseReference.OnStructure
+    except AttributeError:
+        rx_rois = None
+        rx_default = None
+
+    if dialog:
+        ptv_name = obj_name(pick_roi(rx_rois,
+                                     default=rx_default,
+                                     include_types=['Ptv']))
+    else:
+        ptv_name = rx_default
+
+    if not ptv_name:
+        raise Warning("No robust PTV identified.")
+
+    other_ptv_names = [*{obj_name(roi) for roi in rx_rois} - {ptv_name}]
+
+    if not robust_type:
+        robust_type = guess_robust_type(icase.BodySite, dialog)
+
+    robust_opti_roi = None
+
+    with CompositeAction(f"Make {obj_name(beamset)} robust."):
+        robust_exam = prepare_robust_exam(patient, icase, exam_in,
+                                          robust_exam=robust_exam,
+                                          dialog=dialog)
+
+        if robust_type in ['Flash', 'Skin max']:
+            # make rois
+            robust_override_roi, robust_opti_roi = setup_robust_rois(
+                original_exam=exam_in, robust_exam=robust_exam,
+                icase=icase, ptv_name=ptv_name,
+                other_ptv_names=other_ptv_names)
+
+        elif robust_type == 'Gas override':
+            gas_roi = gas_roi or pick_roi(message='Pick ROI for gas override:')
+            pm = icase.PatientModel
+            builder = ROI_Builder(patient_model=pm,
+                                  Color="Blue",
+                                  Type="Undefined",
+                                  TissueName=None,
+                                  RbeCellTypeName=None,
+                                  RoiMaterial='Water')
+            robust_override_roi = builder.CreateROI(name='Robust Override')
+            robust_override_roi.ab_operation(exam=robust_exam,
+                                             rois_a=[obj_name(gas_roi)],
+                                             rois_b=[],
+                                             operation='None')
+
+        # make objectives
+        make_robust_opt(plan, beamset, robust_opti_roi, ptv_name,
+                        robust_exam, robust_type)
+
+        # Compute on additional sets
+        beamset.ComputeDoseOnAdditionalSets(
+            OnlyOneDosePerImageSet=True,
+            AllowGridExpansion=True,
+            ExaminationNames=[obj_name(robust_exam)],
+            FractionNumbers=[0],
+            ComputeBeamDoses=True)
+
+        for fx_eval in icase.TreatmentDelivery.FractionEvaluations:
+            for doe in fx_eval.DoseOnExaminations:
+                if obj_name(doe.OnExamination) in [obj_name(robust_exam),
+                                                   obj_name(exam_in)]:
+                    for doseeval in doe.DoseEvaluations:
+                        doseeval.UpdateDoseGridStructures()
+
+        beamset.FractionDose.UpdateDoseGridStructures()

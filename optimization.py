@@ -8,7 +8,7 @@ from System import InvalidOperationException
 
 from .external import (RayWindow, CompositeAction,
                        get_current, set_progress, RS_VERSION,
-                       Show_YesNo, Show_OK)
+                       Show_YesNo, Show_OK, MB_Icon)
 from .validations import fix_jaw
 
 from copy import copy
@@ -525,8 +525,7 @@ def runbulkopt(options, mindvhlimiters, current_opt): # noqa: 901
             finally:
                 op.DoseCalculation.ComputeFinalDose = True
 
-            for beam_set in current_opt.OptimizedBeamSets:
-                scaleobjectives(beam_set, scaledoses, mindvhlimiters)
+            scaleobjectives(scaledoses, mindvhlimiters)
 
         # Restore dose levels to pre-optmization value (prevent re-opt
         # creep)
@@ -555,21 +554,44 @@ def removefailedobjectives(options, roi_conflicts):
                    ' scaling due to conflicting goals.')
 
 
-def scaleobjectives(beam_set, scaledoses, mindvhlimiters):
+def scaleobjectives(scaledoses, mindvhlimiters):
     # Parse if the optimization needs to be rescaled per target.
     for roi, origDoseLevel, optfn in scaledoses:
-        gdarv = beam_set.FractionDose.GetDoseAtRelativeVolumes
+        if hasattr(optfn, 'OfDoseDistribution'):
+            ofdd = optfn.OfDoseDistribution
+        elif hasattr(optfn, 'OfDoseDistributions'):
+            # TODO: Consider evaluating more than just the first distribution.
+            ofdd = optfn.OfDoseDistributions[0]
+            logger.debug(f"Using dose distribution '{ofdd}' for '{optfn}'")
+        else:
+            # Don't scale objectives because we can't find the right
+            # distribution to scale from
+            logger.warning("Unable find correct distribution to use to scale"
+                           " dose objective.")
+            logger.debug(f"{optfn=} {roi=}")
+            return False
+
+        gdarv = ofdd.GetDoseAtRelativeVolumes
+
         pv = optfn.DoseFunctionParameters.PercentVolume
-        nfx = beam_set.FractionationPattern.NumberOfFractions
         dl = optfn.DoseFunctionParameters.DoseLevel
+
+        try:
+            bs = ofdd.ForBeamSet
+            nfx = bs.FractionationPattern.NumberOfFractions
+        except AttributeError:
+            nfx = 1
+
         doseatvol = gdarv(RoiName=roi,
                           RelativeVolumes=[pv / 100.])[0] * nfx
         newdose = dl + origDoseLevel - doseatvol
+        logger.debug(f'{roi=} {pv=} {origDoseLevel=} {dl=} {doseatvol=}')
         if roi in mindvhlimiters and newdose > mindvhlimiters[roi]:
-            newdose = mindvhlimiters[roi]
-            logger.warning(f'Clamped MinDVH for {roi} to {newdose}.'
+            logger.warning(f'Clamped MinDVH for {roi} to {mindvhlimiters[roi]}'
+                           ' (attmpted {newdose}).'
                            ' Investigate if the dose levels need to be'
                            ' adjusted for limits.')
+            newdose = mindvhlimiters[roi]
 
         optfn.DoseFunctionParameters.DoseLevel = newdose
         logger.debug(f'Scaled {roi} MinDVH from {dl} to {newdose}')
@@ -609,6 +631,24 @@ def RunOptimizations(show_dialog=True, iterations=None, cycles=None):
 
     bopt = BulkOptimizer(plan=plan, beam_set=beam_set,
                          iterations=iterations, cycles=cycles)
+
+    zero_coll = {f'{bs.DicomPlanLabel}:\t{beam.Name}':
+                 beam.InitialCollimatorAngle == 0
+                 for bs in bopt.optimizer.OptimizedBeamSets
+                 for beam in bs.Beams}
+    if any(zero_coll.values()):
+        failing = '\n\t'.join([k for k, v in zero_coll.items() if v])
+        caption = 'Collimator angle warning'
+        message = ('Warning, collimator angle is set to 0 degrees for the'
+                   'following beams:\n\n'
+                   f'\t{failing}\n\n'
+                   'Are you sure this is correct?\n\n'
+                   'Selecting "No" will cancel the optimization')
+        if not show_dialog:
+            raise Warning('Collimator angle is 0 on at least one beam')
+        elif not Show_YesNo(message, caption,
+                            ontop=True, icon=MB_Icon.Warning_):
+            return
 
     if show_dialog:
         run_opt = bopt.show_options_dialog()

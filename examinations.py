@@ -1,5 +1,6 @@
-from .external import (dcmread, uid, SuspendCompositeAction, obj_name,
-                       get_unique_name)
+from .external import (dcmread, uid, CompositeAction, SuspendCompositeAction,
+                       obj_name, get_unique_name, RS_VERSION,
+                       InvalidOperationException, Show_OKCancel)
 
 from datetime import datetime
 
@@ -49,8 +50,8 @@ _EXCLUDED_ROI_TYPES = ['Support', 'Bolus']
 SERIES_ADD = 31415
 
 
-def duplicate_exam(patient, icase, exam_in, copy_structs=True,
-                   exam_name_out=None):
+def duplicate_exam_11b(patient, icase, exam_in,
+                       exam_name_out=None):
     export_params = deepcopy(_SCRIPTED_EXPORT_FOR_EXAM)
 
     new_uid_root = uid.generate_uid()[0:-13]
@@ -63,7 +64,24 @@ def duplicate_exam(patient, icase, exam_in, copy_structs=True,
         export_params['Examinations'].append(exam_in.Name)
 
         _logger.debug(f"{export_params}")
-        icase.ScriptableDicomExport(**export_params)
+
+        try:
+            icase.ScriptableDicomExport(**export_params)
+        except InvalidOperationException as e:
+            if 'Changes must be saved before export.' in str(e):
+                res = Show_OKCancel(("Cannot duplicate exam with unsaved"
+                                     " changes, do you want to save?\n\n"
+                                     "WARNING: Undo will be lost!"),
+                                    caption="Save?",
+                                    icon='Warning',
+                                    defaultResult='Cancel')
+                if res:
+                    patient.Save()
+                    icase.ScriptableDicomExport(**export_params)
+                else:
+                    raise e
+            else:
+                raise e
 
         _logger.info(f"Saved exam to {tempdir}.")
 
@@ -130,9 +148,58 @@ def duplicate_exam(patient, icase, exam_in, copy_structs=True,
     exam_name_out = exam_name_out if exam_name_out else obj_name(exam_in)
     exam_out.Name = get_unique_name(exam_name_out, icase.Examinations)
 
+    return exam_out
+
+
+def duplicate_exam_23b(patient, icase, exam_in,
+                       exam_name_out=None):
+    bb = exam_in.Series[0].ImageStack.GetBoundingBox()
+
+    with CompositeAction("Copy Exam"):
+        exam_in.CropImageStackAndStoreAsNewExamination(MinCorner=bb[0],
+                                                       MaxCorner=bb[1])
+
+        exam_out = icase.Examinations[len(icase.Examinations)-1]
+
+        exam_name_out = exam_name_out if exam_name_out else obj_name(exam_in)
+        exam_out.Name = get_unique_name(exam_name_out, icase.Examinations)
+
+    return exam_out
+
+
+def copy_points(icase, exam_in, exam_out):
+    structsets_in = [ss for ss in icase.PatientModel.StructureSets
+                     if ss.OnExamination.Name == exam_in.Name]
+    structsets_out = [ss for ss in icase.PatientModel.StructureSets
+                      if ss.OnExamination.Name == exam_out.Name]
+
+    if len(structsets_in) != 1:
+        raise ValueError("Expected only one structset per exam in.")
+
+    ss_in = structsets_in[0]
+
+    for poig_in in ss_in.PoiGeometries:
+        for ss_out in structsets_out:
+            ss_out.PoiGeometries[poig_in.OfPoi.Name].Point = poig_in.Point
+
+
+def duplicate_exam(patient, icase, exam_in, copy_structs=True,
+                   excluded_roi_types=_EXCLUDED_ROI_TYPES,
+                   exam_name_out=None):
+
+    if RS_VERSION < 14:
+        exam_out = duplicate_exam_11b(patient, icase, exam_in, exam_name_out)
+
+    elif RS_VERSION >= 14:
+        exam_out = duplicate_exam_23b(patient, icase, exam_in, exam_name_out)
+
     if copy_structs:
-        roi_names = [roi.Name for roi in icase.PatientModel.RegionsOfInterest
-                     if roi.Type not in _EXCLUDED_ROI_TYPES]
+        pm = icase.PatientModel
+        structset = pm.StructureSets[exam_in.Name]
+        roi_names = [geom.OfRoi.Name for geom in structset.RoiGeometries
+                     if geom.PrimaryShape is not None
+                     and not (excluded_roi_types
+                              and geom.OfRoi.Type in excluded_roi_types)]
         copy_params = {
             'SourceExamination': exam_in,
             'TargetExaminationNames': [exam_out.Name],
@@ -141,5 +208,7 @@ def duplicate_exam(patient, icase, exam_in, copy_structs=True,
             'TargetExaminationNamesToSkipAddedReg': [exam_out.Name]
         }
         icase.PatientModel.CopyRoiGeometries(**copy_params)
+
+        copy_points(icase, exam_in, exam_out)
 
     return exam_out
