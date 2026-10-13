@@ -1191,10 +1191,8 @@ def addcouchtoexam(icase, examination=None, plan=None,
             while existing_tops:
                 existing_tops.pop().remove_from_case(geometry_only)
 
-    if 'couch_y' in kwargs and kwargs['couch_y'] is not None:
-        top_height = kwargs['couch_y']
-        del kwargs['couch_y']
-    else:
+    top_height = kwargs.pop('couch_y', None)
+    if top_height is None:
         top_height = get_or_find_table_height(series, icase=icase)
 
     top = tops.determine_top(icase, plan)

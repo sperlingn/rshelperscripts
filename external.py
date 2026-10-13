@@ -1778,17 +1778,17 @@ def pick_list(obj_list, description="Select One",
                'default': default,
                'description': description}
 
-    none_result = PickedNone(include_none)
-
-    if include_none:
-        obj_list = list(obj_list)
-        obj_list.append(none_result)
-
     # Don't bother with a dialog if there is only one, or no choice(s).
     if len(obj_list) == 1:
         return next(iter(obj_list))
     elif len(obj_list) == 0:
         return None
+
+    none_result = PickedNone(include_none)
+
+    if include_none:
+        obj_list = list(obj_list)
+        obj_list.append(none_result)
 
     dlg = ListSelectorDialog(obj_list, results)
     try:
